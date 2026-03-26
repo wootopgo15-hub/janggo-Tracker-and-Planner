@@ -2,7 +2,17 @@ import React, { useState, useRef, useEffect } from 'react';
 import { Printer, FileText, Users, Calendar, Settings, Upload, Wand2, Loader2, Download, CloudUpload, Mail, Send, X, FileDown, Lock, Eye, EyeOff, GraduationCap, UserPlus, ChevronLeft } from 'lucide-react';
 import { GoogleGenAI, Type } from "@google/genai";
 
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+let ai: GoogleGenAI | null = null;
+try {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (apiKey) {
+    ai = new GoogleGenAI({ apiKey });
+  } else {
+    console.warn("GEMINI_API_KEY is not set. AI features will be disabled.");
+  }
+} catch (e) {
+  console.error("Failed to initialize GoogleGenAI:", e);
+}
 
 // --- 타입 정의 ---
 export interface WeekData {
@@ -125,6 +135,7 @@ const defaultData: AppData = {
   year: new Date().getFullYear().toString(),
   month: "02",
   subject: "음악",
+  musicGymnastics: "음악체조",
   planTemplateId: categoryTemplates['음악'].plan,
   journalTemplateId: categoryTemplates['음악'].journal,
   instructors: [
@@ -1012,6 +1023,10 @@ export default function App() {
 
   // AI 자동 작성 함수
   const handleAIGeneration = async (idx: number) => {
+    if (!ai) {
+      alert("AI 기능이 설정되지 않았습니다. (API 키 누락)");
+      return;
+    }
     const week = data.weeks[idx];
     if (!week.image) {
       alert("먼저 교구 사진을 등록(또는 붙여넣기) 해주세요.");
