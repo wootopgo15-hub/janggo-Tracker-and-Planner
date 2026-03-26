@@ -1,0 +1,48 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@media print {
+  body {
+    background-color: white;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+  .no-print {
+    display: none !important;
+  }
+  .print-only {
+    display: block !important;
+  }
+  .page-break {
+    page-break-after: always;
+    break-after: page;
+  }
+  /* 인쇄 시 여백 최소화 및 A4 사이즈 지정 */
+  @page {
+    margin: 10mm;
+    size: A4;
+  }
+}
+
+@media screen {
+  .print-only {
+    display: none;
+  }
+}
+
+/* 미리보기 영역 커스텀 스크롤바 */
+.preview-container::-webkit-scrollbar {
+  width: 8px;
+}
+.preview-container::-webkit-scrollbar-track {
+  background: #f1f1f1;
+  border-radius: 4px;
+}
+.preview-container::-webkit-scrollbar-thumb {
+  background: #c1c1c1;
+  border-radius: 4px;
+}
+.preview-container::-webkit-scrollbar-thumb:hover {
+  background: #a8a8a8;
+}
