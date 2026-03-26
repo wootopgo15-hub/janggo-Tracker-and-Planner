@@ -396,7 +396,7 @@ const JournalTemplate = ({ data, instructor, week }: { data: AppData, instructor
 };
 
 // --- 로그인 페이지 컴포넌트 ---
-function LoginPage({ onLogin, onNavigateToSignup }: { onLogin: () => void, onNavigateToSignup: () => void }) {
+function LoginPage({ onLogin, onNavigateToSignup }: { onLogin: (email: string) => void, onNavigateToSignup: () => void }) {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
@@ -413,7 +413,7 @@ function LoginPage({ onLogin, onNavigateToSignup }: { onLogin: () => void, onNav
     try {
       // 임시 우회: 앱 스크립트 연결 문제 해결 전까지 특정 아이디/비밀번호로 무조건 로그인 허용
       if (email === 'admin' && password === '1234') {
-        onLogin();
+        onLogin(email);
         return;
       }
 
@@ -430,7 +430,7 @@ function LoginPage({ onLogin, onNavigateToSignup }: { onLogin: () => void, onNav
         const result = JSON.parse(text);
         if (result.status === 'success') {
           if (result.isAuthorized) {
-            onLogin();
+            onLogin(email);
           } else {
             alert(result.message || '관리자 승인 대기 중이거나 정보가 일치하지 않습니다.');
           }
@@ -763,6 +763,7 @@ function SignupPage({ onNavigateToLogin }: { onNavigateToLogin: () => void }) {
 // --- 메인 앱 컴포넌트 ---
 export default function App() {
   const [isLoggedIn, setIsLoggedIn] = useState(false);
+  const [loggedInEmail, setLoggedInEmail] = useState('');
   const [isSigningUp, setIsSigningUp] = useState(false);
   const [data, setData] = useState<AppData>(() => {
     const saved = localStorage.getItem('educationAppData');
@@ -783,7 +784,6 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<'form' | 'preview'>('form');
   const [isSavingToDrive, setIsSavingToDrive] = useState(false);
   const [isLoadingDocs, setIsLoadingDocs] = useState(false);
-  const [isLoadingTemplate, setIsLoadingTemplate] = useState(false);
 
   const fileInputRefs = useRef<(HTMLInputElement | null)[]>([]);
   const globalPasteIndex = useRef(0);
@@ -876,44 +876,6 @@ export default function App() {
       alert("네트워크 오류가 발생했습니다.");
     } finally {
       setIsLoadingDocs(false);
-    }
-  };
-
-  // 양식 불러오기 (Apps Script 연동)
-  const handleLoadTemplate = async () => {
-    if (!data.subject) {
-      alert("불러올 양식(과목)을 선택해주세요.");
-      return;
-    }
-    setIsLoadingTemplate(true);
-    try {
-      // action=loadTemplate 대신 기존 action=load를 사용하되 month를 '양식'으로 전달하여
-      // 구글 드라이브의 '양식월' 폴더에서 데이터를 가져오도록 유도합니다.
-      const response = await fetch(`${scriptUrl}?action=load&month=양식&subject=${data.subject}`);
-      const text = await response.text();
-      
-      if (text.includes("App Script is running.")) {
-        alert("구글 앱 스크립트가 최신 버전으로 배포되지 않았습니다.\n앱 스크립트 편집기에서 코드를 수정한 후 반드시 '새 배포(New deployment)'를 진행해주세요.");
-        return;
-      }
-
-      try {
-        const result = JSON.parse(text);
-        if (result.status === 'success' && result.data) {
-          setData(prev => ({ ...prev, ...result.data, subject: data.subject }));
-          alert(`${data.subject} 양식을 성공적으로 불러왔습니다.`);
-        } else {
-          alert(`양식 불러오기 실패: ${result.message}\n\n(구글 드라이브에 '양식월' 폴더를 만들고 해당 과목의 데이터를 먼저 저장해주세요.)`);
-        }
-      } catch (e) {
-        console.error("JSON parse error:", text);
-        alert("양식을 불러오는 중 오류가 발생했습니다.\n서버 응답: " + text.substring(0, 100));
-      }
-    } catch (e) {
-      console.error("Fetch error:", e);
-      alert("양식을 불러오는 중 네트워크 오류가 발생했습니다.");
-    } finally {
-      setIsLoadingTemplate(false);
     }
   };
 
@@ -1142,7 +1104,7 @@ export default function App() {
     if (isSigningUp) {
       return <SignupPage onNavigateToLogin={() => setIsSigningUp(false)} />;
     }
-    return <LoginPage onLogin={() => setIsLoggedIn(true)} onNavigateToSignup={() => setIsSigningUp(true)} />;
+    return <LoginPage onLogin={(email) => { setIsLoggedIn(true); setLoggedInEmail(email); }} onNavigateToSignup={() => setIsSigningUp(true)} />;
   }
 
   return (
@@ -1317,15 +1279,14 @@ export default function App() {
                   </div>
                 </div>
 
-                {/* 네 번째 줄: 양식 불러오기 버튼 */}
+                {/* 네 번째 줄: 이메일 자동 보내기 버튼 */}
                 <div className="pt-4">
                   <button 
-                    onClick={handleLoadTemplate}
-                    disabled={isLoadingTemplate}
-                    className="flex items-center justify-center gap-2 bg-blue-600 text-white px-4 py-3 rounded-lg font-medium hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed w-full shadow-sm"
+                    onClick={() => window.open(`https://janggo-center-auto-email.vercel.app?autoLoginEmail=${encodeURIComponent(loggedInEmail)}`, '_blank')}
+                    className="flex items-center justify-center gap-2 bg-green-600 text-white px-4 py-3 rounded-lg font-medium hover:bg-green-700 transition-colors w-full shadow-sm"
                   >
-                    {isLoadingTemplate ? <Loader2 size={20} className="animate-spin" /> : <FileDown size={20} />}
-                    {isLoadingTemplate ? '불러오는 중...' : '양식 불러오기'}
+                    <Mail size={20} />
+                    이메일 자동 보내기
                   </button>
                 </div>
 
