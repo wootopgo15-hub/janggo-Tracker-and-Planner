@@ -27,6 +27,7 @@ export interface WeekData {
   expectedEffect: string;
   journalGoal: string;
   evaluation: string;
+  additionalMaterial?: string;
   isGenerating?: boolean;
 }
 
@@ -55,44 +56,48 @@ const getWeekRange = (year: number, monthStr: string, weekIndex: number) => {
   const month = parseInt(monthStr, 10);
   if (isNaN(month) || month < 1 || month > 12) return "";
   
-  let d = new Date(year, month - 1, 1);
-  while (d.getDay() !== 1) {
-    d.setDate(d.getDate() + 1);
+  const weeks: {start: number, end: number}[] = [];
+  let currentWeek: number[] = [];
+  
+  const numDays = new Date(year, month, 0).getDate();
+  
+  for (let day = 1; day <= numDays; day++) {
+    const date = new Date(year, month - 1, day);
+    const dayOfWeek = date.getDay();
+    
+    if (dayOfWeek !== 0) { // 일요일 제외
+      currentWeek.push(day);
+    }
+    
+    if (dayOfWeek === 6 || day === numDays) { // 토요일이거나 월의 마지막 날
+      if (currentWeek.length > 0) {
+        weeks.push({
+          start: currentWeek[0],
+          end: currentWeek[currentWeek.length - 1]
+        });
+        currentWeek = [];
+      }
+    }
   }
   
-  let mondayObj = new Date(year, month - 1, d.getDate() + (weekIndex * 7));
-  let saturdayObj = new Date(year, month - 1, d.getDate() + (weekIndex * 7) + 5);
-  
-  const firstDayOfMonth = new Date(year, month - 1, 1);
-  const lastDayOfMonth = new Date(year, month, 0);
+  if (weeks.length === 0) return "";
 
-  // 1주차(첫 주차)인 경우 무조건 해당 월의 1일로 맞춤
+  const formatWeek = (w: {start: number, end: number}) => {
+    return w.start === w.end ? `(${w.start}일)` : `(${w.start}~${w.end}일)`;
+  };
+
   if (weekIndex === 0) {
-    mondayObj = firstDayOfMonth;
-  } else if (mondayObj.getTime() < firstDayOfMonth.getTime()) {
-    mondayObj = firstDayOfMonth;
-  } else if (mondayObj.getTime() > lastDayOfMonth.getTime()) {
-    mondayObj = lastDayOfMonth;
-  }
-
-  // 4주차(마지막 주차)인 경우 무조건 해당 월의 마지막 날짜로 맞춤
-  if (weekIndex === 3) {
-    saturdayObj = lastDayOfMonth;
-  } else if (saturdayObj.getTime() > lastDayOfMonth.getTime()) {
-    saturdayObj = lastDayOfMonth;
-  } else if (saturdayObj.getTime() < firstDayOfMonth.getTime()) {
-    saturdayObj = firstDayOfMonth;
-  }
-  
-  let m1 = mondayObj.getMonth() + 1;
-  let d1 = mondayObj.getDate();
-  let m2 = saturdayObj.getMonth() + 1;
-  let d2 = saturdayObj.getDate();
-  
-  if (m1 === m2) {
-    return `${year}년 ${month}월 ${weekIndex + 1}주차(${d1}~${d2}일)`;
+    let result = `${year}년 ${month}월 1주차${formatWeek(weeks[0])}`;
+    for (let i = 4; i < weeks.length; i++) {
+      result += `, ${i + 1}주차${formatWeek(weeks[i])}`;
+    }
+    return result;
   } else {
-    return `${year}년 ${month}월 ${weekIndex + 1}주차(${m1}/${d1}~${m2}/${d2})`;
+    if (weekIndex < weeks.length) {
+      return `${year}년 ${month}월 ${weekIndex + 1}주차${formatWeek(weeks[weekIndex])}`;
+    } else {
+      return "";
+    }
   }
 };
 
@@ -100,6 +105,8 @@ export interface AppData {
   year: string;
   month: string;
   subject: string;
+  subjectNumber?: string;
+  baseSubject?: string;
   musicGymnastics: string;
   instructors: Instructor[];
   weeks: WeekData[];
@@ -130,11 +137,75 @@ const categoryTemplates: Record<string, { plan: string, journal: string }> = {
   }
 };
 
+const getRotatedWeeks = (weeks: WeekData[], instructorIndex: number): WeekData[] => {
+  if (weeks.length < 4) return weeks; // 최소 4주차 이상이어야 함
+
+  let order = [0, 1, 2, 3]; // 강사1: 1-2-3-4
+  const rot = instructorIndex % 4;
+  if (rot === 1) order = [1, 2, 3, 0];      // 강사2: 2-3-4-1
+  else if (rot === 2) order = [2, 3, 0, 1]; // 강사3: 3-4-1-2
+  else if (rot === 3) order = [3, 0, 1, 2]; // 강사4: 4-1-2-3 (사용자 요청 반영)
+
+  const reorderedWeeks = order.map(i => weeks[i]).filter(Boolean);
+
+  // 5주차 이상이 있으면 뒤에 그대로 붙여줌
+  if (weeks.length > 4) {
+    for (let i = 4; i < weeks.length; i++) {
+      reorderedWeeks.push(weeks[i]);
+    }
+  }
+
+  // 내용은 로테이션된 것을 쓰되, '주차 번호(weekNumber)'와 '날짜(date)'는 달력 순서(원래 배열 순서)를 유지함
+  return reorderedWeeks.map((week, idx) => ({
+    ...week,
+    weekNumber: weeks[idx]?.weekNumber || week.weekNumber,
+    date: weeks[idx]?.date || week.date
+  }));
+};
+
+// --- 유틸리티 함수 ---
+const compressImage = (file: File, maxWidth = 800, maxHeight = 800): Promise<string> => {
+  return new Promise((resolve) => {
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const img = new Image();
+      img.src = event.target?.result as string;
+      img.onload = () => {
+        let width = img.width;
+        let height = img.height;
+
+        if (width > maxWidth || height > maxHeight) {
+          const ratio = Math.min(maxWidth / width, maxHeight / height);
+          width = width * ratio;
+          height = height * ratio;
+        }
+
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+
+        const ctx = canvas.getContext('2d');
+        if (ctx) {
+          ctx.fillStyle = '#ffffff';
+          ctx.fillRect(0, 0, width, height);
+          ctx.drawImage(img, 0, 0, width, height);
+          resolve(canvas.toDataURL('image/jpeg', 0.6));
+        } else {
+          resolve(event.target?.result as string);
+        }
+      };
+      img.onerror = () => resolve(event.target?.result as string);
+    };
+    reader.readAsDataURL(file);
+  });
+};
+
 // --- 기본 데이터 (테스트 및 초기화용) ---
 const defaultData: AppData = {
   year: new Date().getFullYear().toString(),
   month: "02",
   subject: "음악",
+  subjectNumber: "",
   musicGymnastics: "음악체조",
   planTemplateId: categoryTemplates['음악'].plan,
   journalTemplateId: categoryTemplates['음악'].journal,
@@ -156,7 +227,8 @@ const defaultData: AppData = {
       goal: "막대 손잡이를 한 손으로 잡고 좌우 또는 위아래로 흔들어 소리를 만들어 본다. 리듬에 맞춰 속도와 강도를 조절하며 신나는 노래에 맞춰 몸을 함께 흔들며 즐겁게 연주해 본다.",
       expectedEffect: "소리의 크기와 울림의 차이를 구분하며 박자와 리듬 패턴을 인식하는 능력이 향상되고, 손목과 손가락을 사용한 흔들기·두드리기 동작을 통해 소근육 사용 빈도가 증가하며 상지 움직임이 활성화된다.",
       journalGoal: "막대 손잡이를 한 손으로 잡고 좌우 또는 위아래로 흔들어 소리를 만들어 본다. 리듬에 맞춰 속도와 강도를 조절하며 신나는 노래에 맞춰 몸을 함께 흔들며 즐겁게 연주해 본다.",
-      evaluation: "어르신들은 다양한 소리를 탐색하는 활동에 흥미를 보이며 적극적으로 참여하였다.\n소리의 크기와 울림의 차이를 구분하는 과정에서 박자와 리듬 패턴에 대한 인식 능력이 자연스럽게 향상되었다.\n들리는 소리에 맞춰 반응하며 청각적 집중력과 리듬 이해도가 안정적으로 유지되었다.\n손목과 손가락을 활용한 흔들기와 두드리기 동작을 반복하며 소근육 사용 빈도가 증가하였다.\n상지 움직임이 활발해지며 신체 활동에 대한 참여 의욕도 함께 높아졌다.\n활동이 진행될수록 동작과 소리의 일치도가 향상되는 모습이 관찰되었다.\n전반적으로 청각 인지 능력과 소근육 활성화가 함께 이루어진 의미 있는 음악 활동으로 평가된다."
+      evaluation: "어르신들은 다양한 소리를 탐색하는 활동에 흥미를 보이며 적극적으로 참여하였다.\n소리의 크기와 울림의 차이를 구분하는 과정에서 박자와 리듬 패턴에 대한 인식 능력이 자연스럽게 향상되었다.\n들리는 소리에 맞춰 반응하며 청각적 집중력과 리듬 이해도가 안정적으로 유지되었다.\n손목과 손가락을 활용한 흔들기와 두드리기 동작을 반복하며 소근육 사용 빈도가 증가하였다.\n상지 움직임이 활발해지며 신체 활동에 대한 참여 의욕도 함께 높아졌다.\n활동이 진행될수록 동작과 소리의 일치도가 향상되는 모습이 관찰되었다.\n전반적으로 청각 인지 능력과 소근육 활성화가 함께 이루어진 의미 있는 음악 활동으로 평가된다.",
+      additionalMaterial: ""
     },
     {
       weekNumber: 2,
@@ -169,7 +241,8 @@ const defaultData: AppData = {
       goal: "한 손으로 드럼의 가장자리를 잡고 중앙을 부드럽게 두드려 기본 박자를 만들어 본다. 두드리는 힘을 달리하여 강박과 약박을 표현하고, 소리의 크기 차이를 인지하며 연주해 본다.",
       expectedEffect: "반복적인 박자 연주를 통해 리듬 구조를 이해하고 청각적 인식 능력이 향상되며, 두드리는 위치와 힘을 조절하는 과정에서 시각·운동 협응 능력과 정확성이 강화된다.",
       journalGoal: "한 손으로 드럼의 가장자리를 잡고 중앙을 부드럽게 두드려 기본 박자를 만들어 본다. 두드리는 힘을 달리하여 강박과 약박을 표현하고, 소리의 크기 차이를 인지하며 연주해 본다.",
-      evaluation: "드럼의 중앙을 두드리며 기본 박자를 만들어내는 과정에서 리듬감이 향상되었다.\n강박과 약박을 표현하며 소리의 크기 차이를 인지하고 조절하는 능력이 관찰되었다.\n반복적인 연주를 통해 청각적 집중력이 유지되었으며, 시각과 운동의 협응 능력이 강화되었다.\n어르신들이 활동에 즐겁게 참여하며 정서적 안정감을 느끼는 모습이 보였다."
+      evaluation: "드럼의 중앙을 두드리며 기본 박자를 만들어내는 과정에서 리듬감이 향상되었다.\n강박과 약박을 표현하며 소리의 크기 차이를 인지하고 조절하는 능력이 관찰되었다.\n반복적인 연주를 통해 청각적 집중력이 유지되었으며, 시각과 운동의 협응 능력이 강화되었다.\n어르신들이 활동에 즐겁게 참여하며 정서적 안정감을 느끼는 모습이 보였다.",
+      additionalMaterial: ""
     },
     {
       weekNumber: 3,
@@ -182,7 +255,8 @@ const defaultData: AppData = {
       goal: "손잡이를 한 손으로 잡은 후 손목을 앞뒤 또는 위아래로 가볍게 흔들어 소리를 만들어 본다. 흔드는 속도에 따라 빠르기와 리듬을 조절하며 연주해 본다.",
       expectedEffect: "손목 움직임에 따라 발생하는 연속적인 소리를 들으며 빠르기와 박자의 변화를 인지하고, 일정한 리듬을 유지하며 연주함으로써 청각적 집중력과 리듬 감각이 향상된다.",
       journalGoal: "손잡이를 한 손으로 잡은 후 손목을 앞뒤 또는 위아래로 가볍게 흔들어 소리를 만들어 본다. 흔드는 속도에 따라 빠르기와 리듬을 조절하며 연주해 본다.",
-      evaluation: "손목을 활용하여 소리를 만들어내는 과정에서 소근육 조절 능력이 향상되었다.\n흔드는 속도에 따른 빠르기와 리듬의 변화를 인지하고 적극적으로 표현하였다.\n연속적인 소리에 집중하며 청각적 반응 속도가 개선되는 모습이 관찰되었다.\n일정한 리듬을 유지하려는 노력을 통해 집중력과 리듬 감각이 강화되었다."
+      evaluation: "손목을 활용하여 소리를 만들어내는 과정에서 소근육 조절 능력이 향상되었다.\n흔드는 속도에 따른 빠르기와 리듬의 변화를 인지하고 적극적으로 표현하였다.\n연속적인 소리에 집중하며 청각적 반응 속도가 개선되는 모습이 관찰되었다.\n일정한 리듬을 유지하려는 노력을 통해 집중력과 리듬 감각이 강화되었다.",
+      additionalMaterial: ""
     },
     {
       weekNumber: 4,
@@ -195,7 +269,8 @@ const defaultData: AppData = {
       goal: "양손에 각각 하나씩 악기를 잡고 가볍게 맞부딪혀 소리를 내며, 힘 조절에 따라 소리의 크기를 다르게 표현해 본다. 강사의 손 신호나 구호에 따라 연주를 시작하거나 멈추며 집중력 활동으로 확장해 본다.",
       expectedEffect: "손가락, 손목, 전완 근육 사용이 증가하고 양손 협응 능력이 향상되며, 신호에 맞춰 연주를 조절하는 과정에서 집중력과 반응 속도가 향상되어 인지 기능을 자극한다.",
       journalGoal: "양손에 각각 하나씩 악기를 잡고 가볍게 맞부딪혀 소리를 내며, 힘 조절에 따라 소리의 크기를 다르게 표현해 본다. 강사의 손 신호나 구호에 따라 연주를 시작하거나 멈추며 집중력 활동으로 확장해 본다.",
-      evaluation: "양손을 사용하여 악기를 맞부딪히는 활동을 통해 양손 협응 능력이 향상되었다.\n힘 조절을 통해 소리의 크기를 다르게 표현하며 미세한 근육 조절 능력이 관찰되었다.\n강사의 신호에 맞춰 연주를 시작하고 멈추는 과정에서 집중력과 반응 속도가 개선되었다.\n다양한 소리 표현을 통해 인지 기능이 자극되며 활동에 대한 만족도가 높게 나타났다."
+      evaluation: "양손을 사용하여 악기를 맞부딪히는 활동을 통해 양손 협응 능력이 향상되었다.\n힘 조절을 통해 소리의 크기를 다르게 표현하며 미세한 근육 조절 능력이 관찰되었다.\n강사의 신호에 맞춰 연주를 시작하고 멈추는 과정에서 집중력과 반응 속도가 개선되었다.\n다양한 소리 표현을 통해 인지 기능이 자극되며 활동에 대한 만족도가 높게 나타났다.",
+      additionalMaterial: ""
     }
   ]
 };
@@ -808,31 +883,26 @@ export default function App() {
         if (items[i].type.indexOf('image') !== -1) {
           const file = items[i].getAsFile();
           if (file) {
-            const reader = new FileReader();
-            reader.onload = (event) => {
-              if (event.target?.result) {
-                const imgData = event.target.result as string;
-                setData(prev => {
-                  // 이미지가 없거나, 기본 플레이스홀더(unsplash)인 첫 번째 주차 찾기
-                  let targetIdx = prev.weeks.findIndex(w => !w.image || w.image.includes('unsplash.com'));
-                  
-                  if (targetIdx !== -1) {
-                    const newWeeks = [...prev.weeks];
-                    newWeeks[targetIdx] = { ...newWeeks[targetIdx], image: imgData };
-                    globalPasteIndex.current = (targetIdx + 1) % 4;
-                    return { ...prev, weeks: newWeeks };
-                  }
-                  
-                  // 모든 주차에 사용자가 직접 넣은 이미지가 있다면, 순차적으로 덮어쓰기 (1주차부터)
-                  const idxToReplace = globalPasteIndex.current;
+            compressImage(file).then((imgData) => {
+              setData(prev => {
+                // 이미지가 없거나, 기본 플레이스홀더(unsplash)인 첫 번째 주차 찾기
+                let targetIdx = prev.weeks.findIndex(w => !w.image || w.image.includes('unsplash.com'));
+                
+                if (targetIdx !== -1) {
                   const newWeeks = [...prev.weeks];
-                  newWeeks[idxToReplace] = { ...newWeeks[idxToReplace], image: imgData };
-                  globalPasteIndex.current = (idxToReplace + 1) % 4;
+                  newWeeks[targetIdx] = { ...newWeeks[targetIdx], image: imgData };
+                  globalPasteIndex.current = (targetIdx + 1) % 4;
                   return { ...prev, weeks: newWeeks };
-                });
-              }
-            };
-            reader.readAsDataURL(file);
+                }
+                
+                // 모든 주차에 사용자가 직접 넣은 이미지가 있다면, 순차적으로 덮어쓰기 (1주차부터)
+                const idxToReplace = globalPasteIndex.current;
+                const newWeeks = [...prev.weeks];
+                newWeeks[idxToReplace] = { ...newWeeks[idxToReplace], image: imgData };
+                globalPasteIndex.current = (idxToReplace + 1) % 4;
+                return { ...prev, weeks: newWeeks };
+              });
+            });
           }
           break; // 이미지 하나만 처리
         }
@@ -851,7 +921,8 @@ export default function App() {
     }
     setIsLoadingDocs(true);
     try {
-      const response = await fetch(`${scriptUrl}?action=load&month=${data.month}&subject=${data.subject}`);
+      const combinedSubject = data.subject + (data.subjectNumber || '');
+      const response = await fetch(`${scriptUrl}?action=load&month=${data.month}&subject=${combinedSubject}`);
       const text = await response.text();
       
       if (text.includes("App Script is running.")) {
@@ -862,7 +933,14 @@ export default function App() {
       try {
         const result = JSON.parse(text);
         if (result.status === 'success' && result.data) {
-          setData(result.data);
+          const loadedData = result.data;
+          // 저장 시 결합된 subject를 원래대로 복구
+          if (loadedData.baseSubject) {
+            loadedData.subject = loadedData.baseSubject;
+          } else if (loadedData.subjectNumber && loadedData.subject.endsWith(loadedData.subjectNumber)) {
+            loadedData.subject = loadedData.subject.slice(0, -loadedData.subjectNumber.length);
+          }
+          setData(loadedData);
           alert(`${data.month}월 데이터를 성공적으로 불러왔습니다.`);
         } else {
           alert(`불러오기 실패: ${result.message}\n\n(해당 월의 저장된 데이터가 없거나 구글 앱 스크립트 권한 문제일 수 있습니다.)`);
@@ -885,27 +963,15 @@ export default function App() {
 
     try {
       // 강사별 주차 순서 변경 로직 적용 (1-2-3-4, 2-3-4-1, 3-4-1-2, 4-3-2-1)
+      const combinedSubject = data.subject + (data.subjectNumber || '');
       const modifiedData = {
         ...data,
+        subject: combinedSubject,
+        baseSubject: data.subject,
         instructors: data.instructors.map((instructor, index) => {
-          let order = [0, 1, 2, 3]; // 강사1: 1-2-3-4
-          const rot = index % 4;
-          if (rot === 1) order = [1, 2, 3, 0];      // 강사2: 2-3-4-1
-          else if (rot === 2) order = [2, 3, 0, 1]; // 강사3: 3-4-1-2
-          else if (rot === 3) order = [3, 2, 1, 0]; // 강사4: 4-3-2-1
-
-          const reorderedWeeks = order.map(i => data.weeks[i]).filter(Boolean);
-          
-          // 5주차가 있는 경우 뒤에 그대로 추가
-          if (data.weeks.length > 4) {
-            for (let i = 4; i < data.weeks.length; i++) {
-              reorderedWeeks.push(data.weeks[i]);
-            }
-          }
-
           return {
             ...instructor,
-            weeks: reorderedWeeks
+            weeks: getRotatedWeeks(data.weeks, index)
           };
         })
       };
@@ -957,11 +1023,9 @@ export default function App() {
   const handleImageUpload = (idx: number, e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        updateWeek(idx, 'image', reader.result as string);
-      };
-      reader.readAsDataURL(file);
+      compressImage(file).then((imgData) => {
+        updateWeek(idx, 'image', imgData);
+      });
     }
   };
 
@@ -972,11 +1036,9 @@ export default function App() {
       if (items[i].type.indexOf('image') !== -1) {
         const file = items[i].getAsFile();
         if (file) {
-          const reader = new FileReader();
-          reader.onloadend = () => {
-            updateWeek(idx, 'image', reader.result as string);
-          };
-          reader.readAsDataURL(file);
+          compressImage(file).then((imgData) => {
+            updateWeek(idx, 'image', imgData);
+          });
         }
         break;
       }
@@ -1002,6 +1064,21 @@ export default function App() {
 
     updateWeek(idx, 'isGenerating', true);
 
+    let subjectPrompt = "";
+    if (data.subject === '음악') {
+      subjectPrompt = "반드시 '음악'과 관련된 내용(청각 자극, 리듬감, 음악적 표현, 정서적 안정 등)을 중심으로 목표와 기대효과, 전반적 평가를 작성해줘.";
+    } else if (data.subject === '노래') {
+      subjectPrompt = `반드시 마이크, 스피커 등 기기에 대한 언급은 빼고 '노래 부르기' 활동 자체에 집중해줘.
+      [목표] 친숙한 노래, 기억을 끌어내 회상하기, 공감하기, 긍정적인 마인드, 박자, 호흡 조절, 노래의 문화적 배경, 음악 스타일 등을 상황에 맞게 조합해줘.
+      [기대효과 및 평가] 스트레스 감소, 호흡 및 발성 도움, 자신감 획득, 상호작용, 외로움 감소 및 정서적 안정 등을 조합해줘. 더 좋은 내용이 있다면 추가해도 좋아.`;
+    } else if (data.subject === '체조') {
+      subjectPrompt = "반드시 '신체활동'과 관련된 내용(대소근육 발달, 신체 조절 능력, 유연성, 혈액순환 등)을 중심으로 목표와 기대효과, 전반적 평가를 작성해줘.";
+    } else if (data.subject === '전래') {
+      subjectPrompt = "반드시 '음악적 요소(노래, 리듬 등)'는 완전히 빼고, '게임적 요소(규칙 이해, 놀이 참여, 협동, 흥미 유발 등)'와 '신체활동'을 중심으로 목표와 기대효과, 전반적 평가를 작성해줘.";
+    } else if (data.subject === '교구') {
+      subjectPrompt = "반드시 '인지 및 소근육' 발달과 관련된 내용(집중력, 기억력, 손끝 조작 능력, 두뇌 자극 등)을 중심으로 목표와 기대효과, 전반적 평가를 작성해줘.";
+    }
+
     try {
       // 1. 사진 분석 (교구명, 계획안 목표, 기대효과)
       const mimeType = week.image.match(/data:([a-zA-Z0-9]+\/[a-zA-Z0-9-.+]+).*,.*/)?.[1] || 'image/jpeg';
@@ -1011,12 +1088,19 @@ export default function App() {
         throw new Error("이미지 데이터가 올바르지 않습니다.");
       }
 
+      let firstPromptText = `이 사진에 있는 교구(악기 또는 도구)의 이름을 알려주고, 노인 대상 음악/인지/신체 프로그램에서 이 교구를 사용할 때의 '수업 목표'와 '기대 효과'를 작성해줘.`;
+      if (data.subject === '노래') {
+        firstPromptText = `현재 수업은 '노래' 과목이야. 사진을 참고하되, 마이크나 스피커 같은 기기 이름은 toolName에 넣지 말고 '노래 부르기'나 빈칸으로 해줘. 기기 사용법이 아닌 '노래 부르기' 활동 자체의 '수업 목표'와 '기대 효과'를 작성해줘.`;
+      }
+
       const imageResponse = await ai.models.generateContent({
         model: "gemini-3-flash-preview",
         contents: {
           parts: [
             { inlineData: { mimeType, data: base64Data } },
-            { text: `이 사진에 있는 교구(악기 또는 도구)의 이름을 알려주고, 노인 대상 음악/인지/신체 프로그램에서 이 교구를 사용할 때의 '수업 목표'와 '기대 효과'를 작성해줘.
+            { text: `${firstPromptText}
+            ${week.additionalMaterial ? `\n[추가 교구 및 게임 정보]\n사용자가 다음 추가 교구/게임을 입력했습니다: "${week.additionalMaterial}"\n수업 목표를 작성할 때, 사진 속 교구와 이 추가 교구/게임을 함께 활용하는 내용을 목표로 작성해줘.` : ''}
+            ${subjectPrompt}
             응답은 반드시 JSON 형식으로 작성하며, 다음 스키마를 따라야 해:
             {
               "toolName": "교구 이름 (예: 막대탬버린, 소고 등)",
@@ -1050,6 +1134,7 @@ export default function App() {
         - 계획안 기대효과: ${imageResult.expectedEffect}
         
         이 내용을 바탕으로 실제 수업을 진행한 후 작성하는 '일지'의 내용을 작성해줘.
+        ${subjectPrompt}
         1. 일지 목표: 계획안 목표를 바탕으로 작성하되, 실제 달성하고자 했던 구체적인 목표 2가지를 작성해줘. (예: 1. ~한다. 2. ~한다.)
         2. 전반적 평가(모니터링): 위 목표와 기대효과가 실제 수업에서 어떻게 나타났는지, 어르신들의 반응과 참여도, 변화 등을 포함하여 3~4문장으로 구체적으로 작성해줘.
         
@@ -1274,8 +1359,17 @@ export default function App() {
                         placeholder="예: 개나리처녀" 
                       />
                     </div>
-                    {/* 빈 공간 */}
-                    <div></div>
+                    {/* 과목 번호 */}
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">과목 번호</label>
+                      <input 
+                        type="text" 
+                        value={data.subjectNumber || ''} 
+                        onChange={e => setData({...data, subjectNumber: e.target.value})} 
+                        className="w-full border border-gray-300 rounded-md p-2 focus:ring-2 focus:ring-blue-500 outline-none" 
+                        placeholder="예: 1 (입력 시 음악1 등으로 저장됨)" 
+                      />
+                    </div>
                   </div>
                 </div>
 
@@ -1393,12 +1487,12 @@ export default function App() {
                     
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                       <div>
-                        <label className="block text-xs font-medium text-gray-600 mb-1">제공일시 (일지용)</label>
-                        <input type="text" value={week.date || ''} onChange={e => updateWeek(idx, 'date', e.target.value)} className="w-full border border-gray-300 rounded-md p-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none" />
-                      </div>
-                      <div>
                         <label className="block text-xs font-medium text-gray-600 mb-1">교구명</label>
                         <input type="text" value={week.toolName || ''} onChange={e => updateWeek(idx, 'toolName', e.target.value)} className="w-full border border-gray-300 rounded-md p-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none" />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-medium text-gray-600 mb-1">추가 교구 / 게임 (AI 목표 작성용)</label>
+                        <input type="text" value={week.additionalMaterial || ''} onChange={e => updateWeek(idx, 'additionalMaterial', e.target.value)} className="w-full border border-gray-300 rounded-md p-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none" placeholder="예: 풍선, 스카프" />
                       </div>
                     </div>
 
@@ -1449,10 +1543,10 @@ export default function App() {
             
             {/* 첫 번째 강사의 계획안과 1주차 일지만 미리보기로 제공 */}
             <div className="shadow-2xl bg-white transform scale-90 origin-top transition-transform hover:scale-95">
-              <PlanTemplate data={data} instructor={data.instructors[0]} />
+              <PlanTemplate data={{...data, weeks: getRotatedWeeks(data.weeks, 0)}} instructor={data.instructors[0]} />
             </div>
             <div className="shadow-2xl bg-white transform scale-90 origin-top transition-transform hover:scale-95">
-              <JournalTemplate data={data} instructor={data.instructors[0]} week={data.weeks[0]} />
+              <JournalTemplate data={{...data, weeks: getRotatedWeeks(data.weeks, 0)}} instructor={data.instructors[0]} week={getRotatedWeeks(data.weeks, 0)[0]} />
             </div>
           </div>
         ) : null}
@@ -1460,17 +1554,21 @@ export default function App() {
 
       {/* 실제 인쇄 시에만 렌더링되는 영역 (총 20장) */}
       <div className="print-only">
-        {data.instructors.map(instructor => (
-          <React.Fragment key={instructor.id}>
-            {/* 강사별 계획안 1장 */}
-            <PlanTemplate data={data} instructor={instructor} />
-            
-            {/* 강사별 일지 4장 */}
-            {data.weeks.map(week => (
-              <JournalTemplate key={`${instructor.id}-${week.weekNumber}`} data={data} instructor={instructor} week={week} />
-            ))}
-          </React.Fragment>
-        ))}
+        {data.instructors.map((instructor, index) => {
+          const rotatedWeeks = getRotatedWeeks(data.weeks, index);
+          const rotatedData = { ...data, weeks: rotatedWeeks };
+          return (
+            <React.Fragment key={instructor.id}>
+              {/* 강사별 계획안 1장 */}
+              <PlanTemplate data={rotatedData} instructor={instructor} />
+              
+              {/* 강사별 일지 4장 */}
+              {rotatedWeeks.map(week => (
+                <JournalTemplate key={`${instructor.id}-${week.weekNumber}`} data={rotatedData} instructor={instructor} week={week} />
+              ))}
+            </React.Fragment>
+          );
+        })}
       </div>
     </div>
   );
