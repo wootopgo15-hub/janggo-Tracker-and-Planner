@@ -1,1575 +1,976 @@
-import React, { useState, useRef, useEffect } from 'react';
-import { Printer, FileText, Users, Calendar, Settings, Upload, Wand2, Loader2, Download, CloudUpload, Mail, Send, X, FileDown, Lock, Eye, EyeOff, GraduationCap, UserPlus, ChevronLeft } from 'lucide-react';
-import { GoogleGenAI, Type } from "@google/genai";
+/**
+ * @license
+ * SPDX-License-Identifier: Apache-2.0
+ */
 
-let ai: GoogleGenAI | null = null;
-try {
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (apiKey) {
-    ai = new GoogleGenAI({ apiKey });
-  } else {
-    console.warn("GEMINI_API_KEY is not set. AI features will be disabled.");
-  }
-} catch (e) {
-  console.error("Failed to initialize GoogleGenAI:", e);
-}
+import { useState, useEffect, useRef } from "react";
+import { TrendingUp, TrendingDown, Minus, RefreshCw, AlertCircle, BarChart2, Zap, Settings, Shield, History, Play, Square, Copy, ExternalLink, Info } from "lucide-react";
+import { motion, AnimatePresence } from "motion/react";
+import { 
+  LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, 
+  AreaChart, Area, ComposedChart, Bar, ReferenceLine
+} from "recharts";
+import { cn } from "@/src/lib/utils";
+import { AnalysisResult, Decision } from "./types";
 
-// --- 타입 정의 ---
-export interface WeekData {
-  weekNumber: number;
-  date: string;
-  image: string;
-  toolName: string;
-  musicGymnastics: string;
-  singAlong: string;
-  playingActivity: string;
-  goal: string;
-  expectedEffect: string;
-  journalGoal: string;
-  evaluation: string;
-  additionalMaterial?: string;
-  isGenerating?: boolean;
-}
-
-export interface Instructor {
+interface TradeLog {
   id: string;
-  name: string;
-  phone1: string;
-  phone2: string;
-  phone3: string;
-  weeks?: WeekData[];
+  side: "LONG" | "SHORT";
+  symbol: string;
+  amount: string;
+  timestamp: string;
+  status: "SUCCESS" | "FAILED";
+  reason?: string;
 }
 
-const subjectLabels: Record<string, { singAlong: string, playingActivity: string }> = {
-  '음악': { singAlong: '노래회상', playingActivity: '연주활동' },
-  '체조': { singAlong: '체조수업', playingActivity: '도구게임' },
-  '전래': { singAlong: '전래동화', playingActivity: '신체놀이' },
-  '교구': { singAlong: '인지활동', playingActivity: '교구활동' },
-  '노래': { singAlong: '노래회상', playingActivity: '오늘의노래' },
-};
-
-const getLabels = (subject: string) => {
-  return subjectLabels[subject] || subjectLabels['음악'];
-};
-
-const getWeekRange = (year: number, monthStr: string, weekIndex: number) => {
-  const month = parseInt(monthStr, 10);
-  if (isNaN(month) || month < 1 || month > 12) return "";
-  
-  const weeks: {start: number, end: number}[] = [];
-  let currentWeek: number[] = [];
-  
-  const numDays = new Date(year, month, 0).getDate();
-  
-  for (let day = 1; day <= numDays; day++) {
-    const date = new Date(year, month - 1, day);
-    const dayOfWeek = date.getDay();
-    
-    if (dayOfWeek !== 0) { // 일요일 제외
-      currentWeek.push(day);
-    }
-    
-    if (dayOfWeek === 6 || day === numDays) { // 토요일이거나 월의 마지막 날
-      if (currentWeek.length > 0) {
-        weeks.push({
-          start: currentWeek[0],
-          end: currentWeek[currentWeek.length - 1]
-        });
-        currentWeek = [];
-      }
-    }
-  }
-  
-  if (weeks.length === 0) return "";
-
-  const formatWeek = (w: {start: number, end: number}) => {
-    return w.start === w.end ? `(${w.start}일)` : `(${w.start}~${w.end}일)`;
-  };
-
-  if (weekIndex === 0) {
-    let result = `${year}년 ${month}월 1주차${formatWeek(weeks[0])}`;
-    for (let i = 4; i < weeks.length; i++) {
-      result += `, ${i + 1}주차${formatWeek(weeks[i])}`;
-    }
-    return result;
-  } else {
-    if (weekIndex < weeks.length) {
-      return `${year}년 ${month}월 ${weekIndex + 1}주차${formatWeek(weeks[weekIndex])}`;
-    } else {
-      return "";
-    }
-  }
-};
-
-export interface AppData {
-  year: string;
-  month: string;
-  subject: string;
-  subjectNumber?: string;
-  baseSubject?: string;
-  musicGymnastics: string;
-  instructors: Instructor[];
-  weeks: WeekData[];
-  planTemplateId?: string;
-  journalTemplateId?: string;
-}
-
-const categoryTemplates: Record<string, { plan: string, journal: string }> = {
-  '음악': {
-    plan: '1R_GNnJl0ExMF5OUZBvApNwS_cx9bGYLFLvWX76fIqGE',
-    journal: '1UcT_2C5lCsUVo2UgvPoxYNLl5mCWGQFrioLd27a-vuk'
-  },
-  '체조': {
-    plan: '1PGWrwMQPhsa4IKnk75doYz_KKXJtghLWjVlyCmhahn8',
-    journal: '1hmNy5nn90NHg9Zbkk8J3BRiCw4_JkrYsoaOhMPojIA0'
-  },
-  '전래': {
-    plan: '17scDDJAfKiWvSowq61VqCDyofUQS-IUYpYyeWxIAHro',
-    journal: '1E2dPNAXhaVlV9sde7kE_Mtzh8iKca49f24nxhFfrc0A'
-  },
-  '교구': {
-    plan: '1f9yuWrJxWb09h6yOfuguag1b5XMEAZslVGe-S8wy3Ks',
-    journal: '1CyOiKRKVw7mLjUALTzVU7SZCoECSIOwKc37DuVStUdU'
-  },
-  '노래': {
-    plan: '1MqenR4RTwfUo9cq8Y27pLyqRmOni49lgxfGuHXJKByM',
-    journal: '1qZwuNffa7GXsd_iVk9QLWNIaBCqziY5XusFlpQqwC2E'
-  }
-};
-
-const getRotatedWeeks = (weeks: WeekData[], instructorIndex: number): WeekData[] => {
-  if (weeks.length < 4) return weeks; // 최소 4주차 이상이어야 함
-
-  let order = [0, 1, 2, 3]; // 강사1: 1-2-3-4
-  const rot = instructorIndex % 4;
-  if (rot === 1) order = [1, 2, 3, 0];      // 강사2: 2-3-4-1
-  else if (rot === 2) order = [2, 3, 0, 1]; // 강사3: 3-4-1-2
-  else if (rot === 3) order = [3, 0, 1, 2]; // 강사4: 4-1-2-3 (사용자 요청 반영)
-
-  const reorderedWeeks = order.map(i => weeks[i]).filter(Boolean);
-
-  // 5주차 이상이 있으면 뒤에 그대로 붙여줌
-  if (weeks.length > 4) {
-    for (let i = 4; i < weeks.length; i++) {
-      reorderedWeeks.push(weeks[i]);
-    }
-  }
-
-  // 내용은 로테이션된 것을 쓰되, '주차 번호(weekNumber)'와 '날짜(date)'는 달력 순서(원래 배열 순서)를 유지함
-  return reorderedWeeks.map((week, idx) => ({
-    ...week,
-    weekNumber: weeks[idx]?.weekNumber || week.weekNumber,
-    date: weeks[idx]?.date || week.date
-  }));
-};
-
-// --- 유틸리티 함수 ---
-const compressImage = (file: File, maxWidth = 800, maxHeight = 800): Promise<string> => {
-  return new Promise((resolve) => {
-    const reader = new FileReader();
-    reader.onload = (event) => {
-      const img = new Image();
-      img.src = event.target?.result as string;
-      img.onload = () => {
-        let width = img.width;
-        let height = img.height;
-
-        if (width > maxWidth || height > maxHeight) {
-          const ratio = Math.min(maxWidth / width, maxHeight / height);
-          width = width * ratio;
-          height = height * ratio;
-        }
-
-        const canvas = document.createElement('canvas');
-        canvas.width = width;
-        canvas.height = height;
-
-        const ctx = canvas.getContext('2d');
-        if (ctx) {
-          ctx.fillStyle = '#ffffff';
-          ctx.fillRect(0, 0, width, height);
-          ctx.drawImage(img, 0, 0, width, height);
-          resolve(canvas.toDataURL('image/jpeg', 0.6));
-        } else {
-          resolve(event.target?.result as string);
-        }
-      };
-      img.onerror = () => resolve(event.target?.result as string);
-    };
-    reader.readAsDataURL(file);
-  });
-};
-
-// --- 기본 데이터 (테스트 및 초기화용) ---
-const defaultData: AppData = {
-  year: new Date().getFullYear().toString(),
-  month: "02",
-  subject: "음악",
-  subjectNumber: "",
-  musicGymnastics: "음악체조",
-  planTemplateId: categoryTemplates['음악'].plan,
-  journalTemplateId: categoryTemplates['음악'].journal,
-  instructors: [
-    { id: "1", name: "김미희", phone1: "010-8971-4304", phone2: "", phone3: "" },
-    { id: "2", name: "이영희", phone1: "010-8411-4406", phone2: "", phone3: "" },
-    { id: "3", name: "박철수", phone1: "010-1234-5678", phone2: "", phone3: "" },
-    { id: "4", name: "최민수", phone1: "010-9876-5432", phone2: "", phone3: "" },
-  ],
-  weeks: [
-    {
-      weekNumber: 1,
-      date: "2026년 2월 1주차(2~7일)",
-      image: "https://images.unsplash.com/photo-1519892300165-cb5542fb47c7?w=150&h=150&fit=crop",
-      toolName: "막대탬버린",
-      musicGymnastics: "개나리처녀",
-      singAlong: "비내리는 영동교",
-      playingActivity: "부초같은인생, 아모르파티",
-      goal: "막대 손잡이를 한 손으로 잡고 좌우 또는 위아래로 흔들어 소리를 만들어 본다. 리듬에 맞춰 속도와 강도를 조절하며 신나는 노래에 맞춰 몸을 함께 흔들며 즐겁게 연주해 본다.",
-      expectedEffect: "소리의 크기와 울림의 차이를 구분하며 박자와 리듬 패턴을 인식하는 능력이 향상되고, 손목과 손가락을 사용한 흔들기·두드리기 동작을 통해 소근육 사용 빈도가 증가하며 상지 움직임이 활성화된다.",
-      journalGoal: "막대 손잡이를 한 손으로 잡고 좌우 또는 위아래로 흔들어 소리를 만들어 본다. 리듬에 맞춰 속도와 강도를 조절하며 신나는 노래에 맞춰 몸을 함께 흔들며 즐겁게 연주해 본다.",
-      evaluation: "어르신들은 다양한 소리를 탐색하는 활동에 흥미를 보이며 적극적으로 참여하였다.\n소리의 크기와 울림의 차이를 구분하는 과정에서 박자와 리듬 패턴에 대한 인식 능력이 자연스럽게 향상되었다.\n들리는 소리에 맞춰 반응하며 청각적 집중력과 리듬 이해도가 안정적으로 유지되었다.\n손목과 손가락을 활용한 흔들기와 두드리기 동작을 반복하며 소근육 사용 빈도가 증가하였다.\n상지 움직임이 활발해지며 신체 활동에 대한 참여 의욕도 함께 높아졌다.\n활동이 진행될수록 동작과 소리의 일치도가 향상되는 모습이 관찰되었다.\n전반적으로 청각 인지 능력과 소근육 활성화가 함께 이루어진 의미 있는 음악 활동으로 평가된다.",
-      additionalMaterial: ""
-    },
-    {
-      weekNumber: 2,
-      date: "2026년 2월 2주차(9~14일)",
-      image: "https://images.unsplash.com/photo-1514320291840-2e0a9bf2a9ae?w=150&h=150&fit=crop",
-      toolName: "원반드럼",
-      musicGymnastics: "개나리처녀",
-      singAlong: "님과함께",
-      playingActivity: "노래하며춤추며, 멋진인생",
-      goal: "한 손으로 드럼의 가장자리를 잡고 중앙을 부드럽게 두드려 기본 박자를 만들어 본다. 두드리는 힘을 달리하여 강박과 약박을 표현하고, 소리의 크기 차이를 인지하며 연주해 본다.",
-      expectedEffect: "반복적인 박자 연주를 통해 리듬 구조를 이해하고 청각적 인식 능력이 향상되며, 두드리는 위치와 힘을 조절하는 과정에서 시각·운동 협응 능력과 정확성이 강화된다.",
-      journalGoal: "한 손으로 드럼의 가장자리를 잡고 중앙을 부드럽게 두드려 기본 박자를 만들어 본다. 두드리는 힘을 달리하여 강박과 약박을 표현하고, 소리의 크기 차이를 인지하며 연주해 본다.",
-      evaluation: "드럼의 중앙을 두드리며 기본 박자를 만들어내는 과정에서 리듬감이 향상되었다.\n강박과 약박을 표현하며 소리의 크기 차이를 인지하고 조절하는 능력이 관찰되었다.\n반복적인 연주를 통해 청각적 집중력이 유지되었으며, 시각과 운동의 협응 능력이 강화되었다.\n어르신들이 활동에 즐겁게 참여하며 정서적 안정감을 느끼는 모습이 보였다.",
-      additionalMaterial: ""
-    },
-    {
-      weekNumber: 3,
-      date: "2026년 2월 3주차(16~21일)",
-      image: "https://images.unsplash.com/photo-1520523839897-bd0b52f945a0?w=150&h=150&fit=crop",
-      toolName: "우드레칫",
-      musicGymnastics: "개나리처녀",
-      singAlong: "꿈에본내고향",
-      playingActivity: "빨간구두아가씨, 그대여변치마오",
-      goal: "손잡이를 한 손으로 잡은 후 손목을 앞뒤 또는 위아래로 가볍게 흔들어 소리를 만들어 본다. 흔드는 속도에 따라 빠르기와 리듬을 조절하며 연주해 본다.",
-      expectedEffect: "손목 움직임에 따라 발생하는 연속적인 소리를 들으며 빠르기와 박자의 변화를 인지하고, 일정한 리듬을 유지하며 연주함으로써 청각적 집중력과 리듬 감각이 향상된다.",
-      journalGoal: "손잡이를 한 손으로 잡은 후 손목을 앞뒤 또는 위아래로 가볍게 흔들어 소리를 만들어 본다. 흔드는 속도에 따라 빠르기와 리듬을 조절하며 연주해 본다.",
-      evaluation: "손목을 활용하여 소리를 만들어내는 과정에서 소근육 조절 능력이 향상되었다.\n흔드는 속도에 따른 빠르기와 리듬의 변화를 인지하고 적극적으로 표현하였다.\n연속적인 소리에 집중하며 청각적 반응 속도가 개선되는 모습이 관찰되었다.\n일정한 리듬을 유지하려는 노력을 통해 집중력과 리듬 감각이 강화되었다.",
-      additionalMaterial: ""
-    },
-    {
-      weekNumber: 4,
-      date: "2026년 2월 4주차(23~28일)",
-      image: "https://images.unsplash.com/photo-1511192336575-5a79af67a629?w=150&h=150&fit=crop",
-      toolName: "핑거심벌즈",
-      musicGymnastics: "개나리처녀",
-      singAlong: "청춘의꿈",
-      playingActivity: "있을때잘해, 엄지척",
-      goal: "양손에 각각 하나씩 악기를 잡고 가볍게 맞부딪혀 소리를 내며, 힘 조절에 따라 소리의 크기를 다르게 표현해 본다. 강사의 손 신호나 구호에 따라 연주를 시작하거나 멈추며 집중력 활동으로 확장해 본다.",
-      expectedEffect: "손가락, 손목, 전완 근육 사용이 증가하고 양손 협응 능력이 향상되며, 신호에 맞춰 연주를 조절하는 과정에서 집중력과 반응 속도가 향상되어 인지 기능을 자극한다.",
-      journalGoal: "양손에 각각 하나씩 악기를 잡고 가볍게 맞부딪혀 소리를 내며, 힘 조절에 따라 소리의 크기를 다르게 표현해 본다. 강사의 손 신호나 구호에 따라 연주를 시작하거나 멈추며 집중력 활동으로 확장해 본다.",
-      evaluation: "양손을 사용하여 악기를 맞부딪히는 활동을 통해 양손 협응 능력이 향상되었다.\n힘 조절을 통해 소리의 크기를 다르게 표현하며 미세한 근육 조절 능력이 관찰되었다.\n강사의 신호에 맞춰 연주를 시작하고 멈추는 과정에서 집중력과 반응 속도가 개선되었다.\n다양한 소리 표현을 통해 인지 기능이 자극되며 활동에 대한 만족도가 높게 나타났다.",
-      additionalMaterial: ""
-    }
-  ]
-};
-
-// --- 계획안 템플릿 컴포넌트 ---
-const PlanTemplate = ({ data, instructor }: { data: AppData, instructor: Instructor, key?: string | number }) => {
-  const phones = [instructor.phone1, instructor.phone2, instructor.phone3].filter(Boolean).join(' / ');
-  const labels = getLabels(data.subject);
-  return (
-    <div className="page-break w-full bg-white p-8 mx-auto font-sans" style={{ width: '297mm', minHeight: '210mm' }}>
-      <div className="text-right mb-2">
-        <h2 className="text-xl font-bold text-blue-900 border-b-2 border-blue-900 inline-block pb-1">장고교육개발원</h2>
-      </div>
-      
-      <table className="w-full border-collapse border-2 border-blue-600 text-sm text-center">
-        <thead>
-          <tr>
-            <th colSpan={5} className="bg-blue-600 text-white text-2xl py-4 font-bold border border-blue-600">
-              {data.month}월 {data.subject} 계획안
-            </th>
-          </tr>
-          <tr className="bg-blue-600 text-white font-bold">
-            <th className="py-2 border border-blue-600 w-24">강사</th>
-            <th className="py-2 border border-blue-600 w-1/4">{instructor.name}</th>
-            <th className="py-2 border border-blue-600 w-1/4">긴급연락망</th>
-            <th colSpan={2} className="py-2 border border-blue-600 whitespace-pre-wrap">{phones}</th>
-          </tr>
-          <tr className="bg-blue-600 text-white font-bold">
-            <th className="py-2 border border-blue-600">차수</th>
-            <th className="py-2 border border-blue-600">교구</th>
-            <th className="py-2 border border-blue-600">수업활동</th>
-            <th className="py-2 border border-blue-600">목표</th>
-            <th className="py-2 border border-blue-600">기대효과</th>
-          </tr>
-        </thead>
-        <tbody>
-          {data.weeks.map((week, idx) => (
-            <tr key={idx}>
-              <td className="py-4 border border-blue-600 font-bold bg-blue-600 text-white">{week.weekNumber}주</td>
-              <td className="p-2 border border-blue-600">
-                <div className="flex flex-col items-center gap-2">
-                  {week.image ? (
-                    <img src={week.image} alt={week.toolName} className="w-24 h-24 object-contain" referrerPolicy="no-referrer" />
-                  ) : (
-                    <div className="w-24 h-24 bg-gray-100 flex items-center justify-center text-gray-400 text-xs border">이미지</div>
-                  )}
-                  <span className="font-medium">{week.toolName}</span>
-                </div>
-              </td>
-              <td className="p-2 border border-blue-600 text-center text-xs leading-relaxed">
-                <p><span className="font-bold text-blue-800">*음악체조-</span><br/>{week.musicGymnastics}</p>
-                <p className="mt-2"><span className="font-bold text-blue-800">*{labels.singAlong}-</span><br/>{week.singAlong}</p>
-                <p className="mt-2"><span className="font-bold text-blue-800">*{labels.playingActivity}</span><br/>{week.playingActivity}</p>
-              </td>
-              <td className="p-4 border border-blue-600 text-center text-xs leading-relaxed whitespace-pre-wrap">
-                {week.goal}
-              </td>
-              <td className="p-4 border border-blue-600 text-center text-xs leading-relaxed whitespace-pre-wrap">
-                {week.expectedEffect}
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-      <div className="text-center mt-4 font-bold text-lg">
-        ★계획안의 내용은 변동 될 수 있습니다★
-      </div>
-    </div>
-  );
-};
-
-// --- 일지 템플릿 컴포넌트 ---
-const JournalTemplate = ({ data, instructor, week }: { data: AppData, instructor: Instructor, week: WeekData, key?: string | number }) => {
-  const labels = getLabels(data.subject);
-  return (
-    <div className="page-break w-full bg-white p-8 mx-auto font-sans" style={{ width: '210mm', minHeight: '297mm' }}>
-      <div className="flex justify-between items-start mb-4">
-        <h1 className="text-2xl font-bold border-2 border-black px-4 py-2 flex items-center gap-2">
-          <span className="w-4 h-4 bg-black inline-block"></span>
-          프로그램 제공기록 작성
-        </h1>
-        <table className="border-collapse border border-black text-sm text-center w-48">
-          <tbody>
-            <tr>
-              <td className="border border-black bg-gray-100 py-1 w-1/2">담당</td>
-              <td className="border border-black bg-gray-100 py-1 w-1/2">원장</td>
-            </tr>
-            <tr>
-              <td className="border border-black h-16"></td>
-              <td className="border border-black h-16"></td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-
-      <table className="w-full border-collapse border border-black text-sm">
-        <tbody>
-          <tr>
-            <th className="border border-black bg-gray-100 py-2 w-32">제공일시<span className="text-red-500">*</span></th>
-            <td colSpan={3} className="border border-black px-4 py-2">{week.date}</td>
-          </tr>
-          <tr>
-            <th className="border border-black bg-gray-100 py-2">프로그램<span className="text-red-500">*</span></th>
-            <td className="border border-black px-4 py-2 w-1/3">{data.subject}</td>
-            <th className="border border-black bg-gray-100 py-2 w-32">수급자 그룹</th>
-            <td className="border border-black px-4 py-2">수급자</td>
-          </tr>
-          <tr>
-            <th className="border border-black bg-gray-100 py-2">진행자명<span className="text-red-500">*</span></th>
-            <td className="border border-black px-4 py-2">{instructor.name} 강사</td>
-            <th className="border border-black bg-gray-100 py-2">프로그램 유형</th>
-            <td className="border border-black px-4 py-2">인지활동/신체활동</td>
-          </tr>
-          <tr>
-            <th className="border border-black bg-gray-100 py-2">장소<span className="text-red-500">*</span></th>
-            <td className="border border-black px-4 py-2">프로그램실</td>
-            <th className="border border-black bg-gray-100 py-2">참여자 / 현원</th>
-            <td className="border border-black px-4 py-2">00/00(100%)</td>
-          </tr>
-          
-          <tr>
-            <th className="border border-black bg-gray-100 py-4">준비물</th>
-            <td className="border border-black p-4 text-center">
-              {week.image ? (
-                <img src={week.image} alt={week.toolName} className="w-24 h-24 object-contain mx-auto" referrerPolicy="no-referrer" />
-              ) : (
-                <div className="w-24 h-24 bg-gray-100 flex items-center justify-center text-gray-400 text-xs border mx-auto">이미지</div>
-              )}
-            </td>
-            <td colSpan={2} className="border border-black px-4 py-2 text-center font-bold">
-              {week.toolName}, 마이크, 스피커, 이어마이크, TV
-            </td>
-          </tr>
-
-          <tr>
-            <th rowSpan={3} className="border border-black bg-gray-100 py-2">활동수준</th>
-            <th className="border border-black bg-gray-100 py-1 w-20 text-center">1수준</th>
-            <td colSpan={2} className="border border-black px-4 py-1">노래를 불러본다.</td>
-          </tr>
-          <tr>
-            <th className="border border-black bg-gray-100 py-1 text-center">2수준</th>
-            <td colSpan={2} className="border border-black px-4 py-1">노래를 부르며 악기를 두드려본다.</td>
-          </tr>
-          <tr>
-            <th className="border border-black bg-gray-100 py-1 text-center">3수준</th>
-            <td colSpan={2} className="border border-black px-4 py-1">노래를 부르며 악기를 두드리고 창의적인 연주를 해본다.</td>
-          </tr>
-
-          <tr>
-            <th className="border border-black bg-gray-100 py-4">목표</th>
-            <td colSpan={3} className="border border-black px-4 py-4 whitespace-pre-wrap leading-relaxed">
-              {week.journalGoal}
-            </td>
-          </tr>
-
-          <tr>
-            <th className="border border-black bg-gray-100 py-4">
-              프로그램<br/>내용<span className="text-red-500">*</span><br/>
-              <span className="font-normal text-xs">(진행과정)</span>
-            </th>
-            <td colSpan={3} className="border border-black px-4 py-4 leading-relaxed">
-              <p className="font-bold">■도입 : 인사</p>
-              <p>- 어르신과 인사를 한 후 오늘의 날짜와 요일, 시간에 관해 질문하며 지남력 훈련을 한다.</p>
-              <p>- 신나는 노래를 이용하여 인사한다.</p>
-              <p>- 스트레칭 후 건강 운동으로 근육 운동을 한다.</p>
-              
-              <p className="font-bold mt-3">■전개 : 음악체조, {labels.singAlong}</p>
-              <p>- 음악체조(<span className="font-bold">{data.musicGymnastics}</span>)를 한다.</p>
-              <p>- {labels.singAlong}(<span className="font-bold">{week.singAlong}</span>)을(를) 한다.</p>
-              
-              <p className="font-bold mt-3">■전개 : {labels.playingActivity}</p>
-              <p>- <span className="font-bold">{week.toolName}</span>을 탐색해본다.(모양, 색, 크기)</p>
-              <p>- {labels.playingActivity}(<span className="font-bold">{week.playingActivity}</span>)을(를) 한다.</p>
-              <p>- {labels.playingActivity} 창의적인 활동을 해본다.</p>
-              
-              <p className="font-bold mt-3">■마무리 : 인사</p>
-              <p>- 악기연주로 피로해진 근육을 스트레칭한다.</p>
-              <p>- 이번 주 음악을 배워보고 노래와 율동을 한 후, 수업을 마무리한다.</p>
-            </td>
-          </tr>
-
-          <tr>
-            <th className="border border-black bg-gray-100 py-4">
-              전반적 평가<br/>
-              <span className="font-normal text-xs">(모니터링)</span>
-            </th>
-            <td colSpan={3} className="border border-black px-4 py-4 whitespace-pre-wrap leading-relaxed text-justify">
-              {week.evaluation}
-            </td>
-          </tr>
-        </tbody>
-      </table>
-      <div className="text-center mt-4 font-bold text-red-500 text-sm">
-        * 본 일지는 참고용 입니다.
-      </div>
-    </div>
-  );
-};
-
-// --- 로그인 페이지 컴포넌트 ---
-function LoginPage({ onLogin, onNavigateToSignup }: { onLogin: (email: string) => void, onNavigateToSignup: () => void }) {
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [showPassword, setShowPassword] = useState(false);
-  const [isLoading, setIsLoading] = useState(false);
-
-  const handleLogin = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!email || !password) {
-      alert('이메일과 비밀번호를 입력해주세요.');
-      return;
-    }
-
-    setIsLoading(true);
-    try {
-      // 임시 우회: 앱 스크립트 연결 문제 해결 전까지 특정 아이디/비밀번호로 무조건 로그인 허용
-      if (email === 'admin' && password === '1234') {
-        onLogin(email);
-        return;
-      }
-
-      const scriptUrl = "https://script.google.com/macros/s/AKfycbzkGgdRY1G_t1C0MQHpwHlvaZ0k0ZrEkGECfFtwGtR75-3RVsse1nubuktGXpru0jtP/exec";
-      const response = await fetch(`${scriptUrl}?action=checkLogin&email=${encodeURIComponent(email)}&password=${encodeURIComponent(password)}`);
-      
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
-      }
-      
-      const text = await response.text();
-      
-      try {
-        const result = JSON.parse(text);
-        if (result.status === 'success') {
-          if (result.isAuthorized) {
-            onLogin(email);
-          } else {
-            alert(result.message || '관리자 승인 대기 중이거나 정보가 일치하지 않습니다.');
-          }
-        } else {
-          alert(`로그인 오류: ${result.message}`);
-        }
-      } catch (e) {
-        console.error("JSON parse error:", text);
-        alert('서버 응답을 처리할 수 없습니다. 구글 앱스 스크립트 배포 URL이 정확한지 확인해주세요.');
-      }
-    } catch (e) {
-      console.error("Login check error:", e);
-      alert('로그인 처리 중 네트워크 오류가 발생했습니다.\n(CORS 문제일 수 있습니다. 구글 앱스 스크립트 배포 설정을 확인해주세요.)');
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  return (
-    <div className="min-h-screen flex items-center justify-center bg-cover bg-center relative" style={{ backgroundImage: 'url("https://images.unsplash.com/photo-1497366216548-37526070297c?ixlib=rb-4.0.3&auto=format&fit=crop&w=1920&q=80")' }}>
-      <div className="absolute inset-0 bg-black/40 backdrop-blur-sm"></div>
-      
-      <div className="relative z-10 bg-white/90 backdrop-blur-md p-10 rounded-3xl shadow-2xl w-full max-w-md border border-white/20">
-        <div className="flex flex-col items-center mb-8">
-          <div className="bg-blue-600 p-4 rounded-2xl mb-4 shadow-lg">
-            <GraduationCap size={40} className="text-white" />
-          </div>
-          <h1 className="text-2xl font-bold text-gray-900 mb-1">장고교육개발원</h1>
-          <p className="text-sm text-gray-500 font-medium">일지, 계획안, 이메일 자동화 프로그램</p>
-        </div>
-
-        <form onSubmit={handleLogin} className="space-y-5">
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1.5">이메일</label>
-            <div className="relative">
-              <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                <Mail size={18} className="text-gray-400" />
-              </div>
-              <input
-                type="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                className="block w-full pl-10 pr-3 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white/50"
-                placeholder="이메일을 입력하세요"
-              />
-            </div>
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1.5">비밀번호</label>
-            <div className="relative">
-              <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                <Lock size={18} className="text-gray-400" />
-              </div>
-              <input
-                type={showPassword ? "text" : "password"}
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                className="block w-full pl-10 pr-10 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white/50"
-                placeholder="••••••••"
-              />
-              <button
-                type="button"
-                onClick={() => setShowPassword(!showPassword)}
-                className="absolute inset-y-0 right-0 pr-3 flex items-center"
-              >
-                {showPassword ? (
-                  <EyeOff size={18} className="text-gray-400 hover:text-gray-600" />
-                ) : (
-                  <Eye size={18} className="text-gray-400 hover:text-gray-600" />
-                )}
-              </button>
-            </div>
-          </div>
-
-          <button
-            type="submit"
-            disabled={isLoading}
-            className="w-full flex items-center justify-center gap-2 bg-blue-600 text-white py-3.5 rounded-xl font-semibold text-lg hover:bg-blue-700 transition-colors shadow-md mt-2 disabled:opacity-70 disabled:cursor-not-allowed"
-          >
-            {isLoading ? <Loader2 size={24} className="animate-spin" /> : null}
-            {isLoading ? '확인 중...' : '로그인'}
-          </button>
-
-          <button
-            type="button"
-            onClick={onNavigateToSignup}
-            className="w-full flex items-center justify-center gap-2 bg-gray-100 text-gray-700 py-3 rounded-xl font-medium hover:bg-gray-200 transition-colors"
-          >
-            <UserPlus size={18} />
-            신규 회원가입 신청
-          </button>
-        </form>
-        
-        <div className="mt-8 text-center">
-          <p className="text-xs text-gray-500">© 2026 Janggo Education Dev Institute.</p>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// --- 회원가입 페이지 컴포넌트 ---
-function SignupPage({ onNavigateToLogin }: { onNavigateToLogin: () => void }) {
-  const [formData, setFormData] = useState({
-    name: '',
-    email: '',
-    password: '',
-    department: '',
-    branch: '',
-    phone: '',
-    address: '',
-    joinDate: '',
-    role: '강사'
-  });
-  const [isLoading, setIsLoading] = useState(false);
-
-  const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
-    const { name, value } = e.target;
-    setFormData(prev => ({ ...prev, [name]: value }));
-  };
-
-  const handleSignup = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!formData.name || !formData.email || !formData.password || !formData.phone) {
-      alert('필수 항목을 모두 입력해주세요.');
-      return;
-    }
-
-    setIsLoading(true);
-    try {
-      const scriptUrl = "https://script.google.com/macros/s/AKfycbzkGgdRY1G_t1C0MQHpwHlvaZ0k0ZrEkGECfFtwGtR75-3RVsse1nubuktGXpru0jtP/exec";
-      const response = await fetch(scriptUrl, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'text/plain;charset=utf-8',
-        },
-        body: JSON.stringify({
-          action: 'signup',
-          data: formData
-        }),
-      });
-
-      const text = await response.text();
-      
-      try {
-        const result = JSON.parse(text);
-        if (result.status === 'success') {
-          alert('회원가입 신청이 완료되었습니다.\n관리자 승인 후 로그인할 수 있습니다.');
-          onNavigateToLogin();
-        } else {
-          alert(`회원가입 실패: ${result.message}`);
-        }
-      } catch (e) {
-        console.error("JSON parse error:", text);
-        alert('회원가입 처리 중 오류가 발생했습니다.\n(서버 응답 오류)');
-      }
-    } catch (e) {
-      console.error("Signup error:", e);
-      alert('회원가입 처리 중 네트워크 오류가 발생했습니다.\n(CORS 문제일 수 있습니다. 구글 앱스 스크립트 배포 설정을 확인해주세요.)');
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  return (
-    <div className="min-h-screen flex items-center justify-center bg-cover bg-center relative py-10" style={{ backgroundImage: 'url("https://images.unsplash.com/photo-1497366216548-37526070297c?ixlib=rb-4.0.3&auto=format&fit=crop&w=1920&q=80")' }}>
-      <div className="absolute inset-0 bg-black/40 backdrop-blur-sm"></div>
-      
-      <div className="relative z-10 bg-white/90 backdrop-blur-md p-8 rounded-3xl shadow-2xl w-full max-w-md border border-white/20 max-h-[90vh] overflow-y-auto custom-scrollbar">
-        <div className="flex items-center justify-between mb-6">
-          <button 
-            type="button"
-            onClick={onNavigateToLogin}
-            className="p-2 bg-white rounded-full shadow-sm hover:bg-gray-50 transition-colors"
-          >
-            <ChevronLeft size={24} className="text-gray-700" />
-          </button>
-          <div className="text-right">
-            <h2 className="text-blue-600 font-bold text-lg leading-tight">Janggo 2026</h2>
-            <p className="text-[10px] text-gray-500 font-semibold tracking-wider">AWAITING APPROVAL</p>
-          </div>
-        </div>
-
-        <div className="flex items-center gap-3 mb-8">
-          <div className="bg-blue-600 p-3 rounded-full shadow-md">
-            <UserPlus size={24} className="text-white" />
-          </div>
-          <div>
-            <h1 className="text-xl font-bold text-gray-900">회원가입 신청</h1>
-            <p className="text-xs text-gray-500 font-medium">가입 후 관리자가 승인해야 접속 가능합니다.</p>
-          </div>
-        </div>
-
-        <form onSubmit={handleSignup} className="space-y-4">
-          <div>
-            <label className="block text-xs font-bold text-gray-700 mb-1">이름</label>
-            <input
-              type="text"
-              name="name"
-              value={formData.name}
-              onChange={handleChange}
-              className="block w-full px-4 py-3 border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-gray-50/50 text-sm"
-              placeholder="실명을 입력하세요"
-            />
-          </div>
-
-          <div>
-            <label className="block text-xs font-bold text-gray-700 mb-1">이메일 (ID)</label>
-            <input
-              type="email"
-              name="email"
-              value={formData.email}
-              onChange={handleChange}
-              className="block w-full px-4 py-3 border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white text-sm"
-              placeholder="example@janggo.com"
-            />
-          </div>
-
-          <div>
-            <label className="block text-xs font-bold text-gray-700 mb-1">비밀번호</label>
-            <input
-              type="password"
-              name="password"
-              value={formData.password}
-              onChange={handleChange}
-              className="block w-full px-4 py-3 border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white text-sm"
-              placeholder="6자 이상 입력하세요"
-            />
-          </div>
-
-          <div>
-            <label className="block text-xs font-bold text-gray-700 mb-1">부서</label>
-            <select
-              name="department"
-              value={formData.department}
-              onChange={handleChange}
-              className="block w-full px-4 py-3 border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-gray-50/50 text-sm"
-            >
-              <option value="">부서 선택</option>
-              <option value="음악">음악</option>
-              <option value="전래">전래</option>
-              <option value="체조">체조</option>
-              <option value="교구">교구</option>
-              <option value="노래">노래</option>
-            </select>
-          </div>
-
-          <div>
-            <label className="block text-xs font-bold text-gray-700 mb-1">지사</label>
-            <select
-              name="branch"
-              value={formData.branch}
-              onChange={handleChange}
-              className="block w-full px-4 py-3 border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-gray-50/50 text-sm"
-            >
-              <option value="">지사 선택</option>
-              <option value="천안">천안</option>
-              <option value="세종">세종</option>
-              <option value="평택">평택</option>
-            </select>
-          </div>
-
-          <div>
-            <label className="block text-xs font-bold text-gray-700 mb-1">전화번호</label>
-            <input
-              type="tel"
-              name="phone"
-              value={formData.phone}
-              onChange={handleChange}
-              className="block w-full px-4 py-3 border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-gray-50/50 text-sm"
-              placeholder="010-0000-0000"
-            />
-          </div>
-
-          <div>
-            <label className="block text-xs font-bold text-gray-700 mb-1">주소</label>
-            <input
-              type="text"
-              name="address"
-              value={formData.address}
-              onChange={handleChange}
-              className="block w-full px-4 py-3 border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-gray-50/50 text-sm"
-              placeholder="거주지 주소를 입력하세요"
-            />
-          </div>
-
-          <div>
-            <label className="block text-xs font-bold text-gray-700 mb-1">입사일</label>
-            <input
-              type="date"
-              name="joinDate"
-              value={formData.joinDate}
-              onChange={handleChange}
-              className="block w-full px-4 py-3 border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white text-sm"
-            />
-          </div>
-
-          <div>
-            <label className="block text-xs font-bold text-gray-700 mb-1">등급 (권한)</label>
-            <select
-              name="role"
-              value={formData.role}
-              onChange={handleChange}
-              className="block w-full px-4 py-3 border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-gray-50/50 text-sm"
-            >
-              <option value="강사">강사</option>
-              <option value="부관리자">부관리자</option>
-            </select>
-          </div>
-
-          <button
-            type="submit"
-            disabled={isLoading}
-            className="w-full flex items-center justify-center gap-2 bg-blue-600 text-white py-4 rounded-xl font-bold text-base hover:bg-blue-700 transition-colors shadow-md mt-6 disabled:opacity-70 disabled:cursor-not-allowed"
-          >
-            {isLoading ? <Loader2 size={20} className="animate-spin" /> : null}
-            {isLoading ? '신청 중...' : '가입 신청하기'}
-          </button>
-        </form>
-        
-        <div className="mt-6 text-center">
-          <p className="text-[10px] text-gray-500">© 2026 Janggo Education Dev Institute.</p>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// --- 메인 앱 컴포넌트 ---
 export default function App() {
-  const [isLoggedIn, setIsLoggedIn] = useState(false);
-  const [loggedInEmail, setLoggedInEmail] = useState('');
-  const [isSigningUp, setIsSigningUp] = useState(false);
-  const [data, setData] = useState<AppData>(() => {
-    const saved = localStorage.getItem('educationAppData');
-    if (saved) {
-      try {
-        return JSON.parse(saved);
-      } catch (e) {
-        console.error("Failed to parse saved data", e);
-      }
-    }
-    return defaultData;
+  const [symbol, setSymbol] = useState("BTCUSDT");
+  const [granularity, setGranularity] = useState("15m");
+  const [analysis, setAnalysis] = useState<AnalysisResult | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  
+  // Trading States
+  const [isAutoTrade, setIsAutoTrade] = useState(false);
+  const [orderSize, setOrderSize] = useState("15");
+  const [takeProfit, setTakeProfit] = useState("1");
+  const [stopLoss, setStopLoss] = useState("0.5");
+  
+  const [apiKey, setApiKey] = useState(() => localStorage.getItem("janggo_bitget_apiKey") || "");
+  const [secretKey, setSecretKey] = useState(() => localStorage.getItem("janggo_bitget_secretKey") || "");
+  const [passphrase, setPassphrase] = useState(() => localStorage.getItem("janggo_bitget_passphrase") || "");
+
+  useEffect(() => {
+    localStorage.setItem("janggo_bitget_apiKey", apiKey);
+  }, [apiKey]);
+  useEffect(() => {
+    localStorage.setItem("janggo_bitget_secretKey", secretKey);
+  }, [secretKey]);
+  useEffect(() => {
+    localStorage.setItem("janggo_bitget_passphrase", passphrase);
+  }, [passphrase]);
+
+  const [logs, setLogs] = useState<TradeLog[]>(() => {
+    try {
+      const saved = localStorage.getItem("janggo_trade_logs");
+      return saved ? JSON.parse(saved) : [];
+    } catch { return []; }
   });
   
+  const [stats, setStats] = useState(() => {
+    try {
+      const saved = localStorage.getItem("janggo_trade_stats");
+      return saved ? JSON.parse(saved) : { winCount: 0, lossCount: 0, totalProfit: 0, initialEquity: null, currentEquity: null };
+    } catch {
+      return { winCount: 0, lossCount: 0, totalProfit: 0, initialEquity: null, currentEquity: null };
+    }
+  });
+
   useEffect(() => {
-    localStorage.setItem('educationAppData', JSON.stringify(data));
-  }, [data]);
+    localStorage.setItem("janggo_trade_logs", JSON.stringify(logs));
+  }, [logs]);
 
-  const [activeTab, setActiveTab] = useState<'form' | 'preview'>('form');
-  const [isSavingToDrive, setIsSavingToDrive] = useState(false);
-  const [isLoadingDocs, setIsLoadingDocs] = useState(false);
-
-  const fileInputRefs = useRef<(HTMLInputElement | null)[]>([]);
-  const globalPasteIndex = useRef(0);
-
-  const scriptUrl = "https://script.google.com/macros/s/AKfycbyHQopwYIm2n0bdC8BqAL2ipPxj5mVhZWzcuN-W55DrckW9eIDT0NgcRnZ-RafWVxPtvQ/exec";
-
-  // 전역 붙여넣기 이벤트 리스너 (빈 공간 클릭 후 Ctrl+V 시 비어있는 주차에 순서대로 이미지 삽입)
   useEffect(() => {
-    const handleGlobalPaste = (e: ClipboardEvent) => {
-      const activeTag = document.activeElement?.tagName;
-      const isInputFocused = activeTag === 'INPUT' || activeTag === 'TEXTAREA' || document.activeElement?.getAttribute('contenteditable') === 'true';
-      
-      // 개별 이미지 컨테이너에 포커스가 있을 때는 개별 onPaste가 처리하도록 무시
-      if (isInputFocused || document.activeElement?.classList.contains('week-image-container')) {
-        return;
-      }
+    localStorage.setItem("janggo_trade_stats", JSON.stringify(stats));
+  }, [stats]);
+  const [activeTab, setActiveTab] = useState<"analysis" | "trading">("analysis");
+  const [analysisView, setAnalysisView] = useState<"indicators" | "live">("indicators");
+  const [showScript, setShowScript] = useState(false);
+  const [customUrl, setCustomUrl] = useState("https://janggo-algorithmic-trader.vercel.app");
+  
+  const lastSignalRef = useRef<Record<string, Decision>>({});
 
-      const items = e.clipboardData?.items;
-      if (!items) return;
+  const effectiveApiUrl = customUrl || window.location.origin.replace(/\/+$/, "");
 
-      for (let i = 0; i < items.length; i++) {
-        if (items[i].type.indexOf('image') !== -1) {
-          const file = items[i].getAsFile();
-          if (file) {
-            compressImage(file).then((imgData) => {
-              setData(prev => {
-                // 이미지가 없거나, 기본 플레이스홀더(unsplash)인 첫 번째 주차 찾기
-                let targetIdx = prev.weeks.findIndex(w => !w.image || w.image.includes('unsplash.com'));
-                
-                if (targetIdx !== -1) {
-                  const newWeeks = [...prev.weeks];
-                  newWeeks[targetIdx] = { ...newWeeks[targetIdx], image: imgData };
-                  globalPasteIndex.current = (targetIdx + 1) % 4;
-                  return { ...prev, weeks: newWeeks };
-                }
-                
-                // 모든 주차에 사용자가 직접 넣은 이미지가 있다면, 순차적으로 덮어쓰기 (1주차부터)
-                const idxToReplace = globalPasteIndex.current;
-                const newWeeks = [...prev.weeks];
-                newWeeks[idxToReplace] = { ...newWeeks[idxToReplace], image: imgData };
-                globalPasteIndex.current = (idxToReplace + 1) % 4;
-                return { ...prev, weeks: newWeeks };
-              });
-            });
-          }
-          break; // 이미지 하나만 처리
-        }
-      }
+  const appsScriptCode = `/**
+ * 🚀 비트겟 선물 자동매매 전문 스크립트 (Bitget Futures v3.7.0)
+ * 
+ * [중요 설정 안내]
+ * 본 스크립트는 Vercel을 포함한 외부 배포 주소와 연동하여 사용 가능합니다.
+ * 
+ * 👉 해결 방법:
+ * 1. 앱 우측 상단 톱니바퀴(Settings) -> [Deploy to Vercel/Cloud Run] 클릭
+ * 2. 배포가 완료된 후 발급되는 외부 접속 주소(URL)를 복사
+ * 3. 아래 API_URL 사이에 해당 주소를 붙여넣으세요.
+ */
+const API_URL = "${effectiveApiUrl}"; // 여기에 배포된 Vercel/Cloud Run 주소를 붙여넣으세요.
+const SYMBOL = "${symbol}"; 
+const SIZE = "${orderSize}";
+const TAKE_PROFIT = "${takeProfit}";
+const STOP_LOSS = "${stopLoss}";
+
+function main() {
+  Logger.log("--- 분석 프로세스 시작 ---");
+  
+  if (API_URL.indexOf("ai.studio") !== -1 || API_URL.indexOf("-dev-") !== -1 || API_URL.indexOf("-pre-") !== -1) {
+    Logger.log("❌ 오류: 프리뷰 주소(" + API_URL + ")는 보안상 외부 접근이 불가능합니다.");
+    Logger.log("해결: Vercel이나 Cloud Run으로 배포한 후, 발급된 새로운 주소를 여기에 입력하세요.");
+    return;
+  }
+  
+  try {
+    const options = {
+      method: "post",
+      contentType: "application/json",
+      payload: JSON.stringify({ symbol: SYMBOL }),
+      muteHttpExceptions: true,
+      followRedirects: false
     };
+    
+    // 이중 슬래시 방지 처리
+    const targetUrl = (API_URL + "/api/analyze").replace(/([^:]\\/)\\/+/g, "$1");
+    
+    const res = UrlFetchApp.fetch(targetUrl, options);
+    const code = res.getResponseCode();
+    const content = res.getContentText();
+    
+    Logger.log("대상 URL : " + targetUrl);
+    Logger.log("응답 코드: " + code);
 
-    window.addEventListener('paste', handleGlobalPaste);
-    return () => window.removeEventListener('paste', handleGlobalPaste);
+    if (code === 302 || code === 301 || code === 307) {
+      Logger.log("❌ 오류 " + code + ": 접근이 차단되었습니다 (로그인 페이지로 리다이렉트 됨).");
+      Logger.log("원인: 앱이 비공개(Private) 상태이거나 잘못된 주소를 사용 중입니다.");
+      Logger.log("해결: Share 버튼을 눌러 'Anyone with the link'로 설정한 Public URL을 사용하세요.");
+      return;
+    }
+
+    if (code === 404) {
+      Logger.log("❌ 오류 404: 경로를 찾을 수 없습니다.");
+      Logger.log("원인: API 주소가 잘못되었습니다. 앱 상단의 주소를 정확히 복사했는지 확인하세요.");
+      return;
+    }
+
+    if (code === 401 || code === 403) {
+      Logger.log("❌ 오류 " + code + ": 접근 거부.");
+      Logger.log("해결: 앱 우측 상단 'Share' 버튼을 눌러 'Anyone with the link' (Public)로 설정하세요.");
+      return;
+    }
+
+    if (code === 500) {
+      Logger.log("❌ 오류 500: 서버 내부 오류가 발생했습니다.");
+      Logger.log("원인: Vercel 서버 재배포가 안 되었거나, 앱 내부 API 환경변수가 올바르지 않습니다.");
+      Logger.log("해결: 우측 상단 Settings에서 [Deploy to Vercel]을 다시 실행하여 최신 코드를 배포해주세요.");
+      Logger.log("상세 에러: " + content.substring(0, 50));
+      return;
+    }
+
+    if (content.toLowerCase().indexOf("<!doctype") !== -1 || content.toLowerCase().indexOf("<html") !== -1) {
+      Logger.log("❌ 오류: 서버가 JSON 대신 HTML을 반환했습니다.");
+      Logger.log("원인: 주소가 부정확하거나 서버 상태가 올바르지 않습니다.");
+      return;
+    }
+
+    let data;
+    try {
+      data = JSON.parse(content);
+    } catch (e) {
+      Logger.log("❌ JSON 파싱 실패: " + content.substring(0, 100));
+      return;
+    }
+
+    Logger.log("✅ 신호 분석: " + data.decision + " (" + data.analysis_summary + ")");
+
+    if (data.decision === "LONG" || data.decision === "SHORT") {
+      const tradeRes = UrlFetchApp.fetch(API_URL + "/api/trade/execute", {
+        method: "post",
+        contentType: "application/json",
+        payload: JSON.stringify({
+          side: data.decision,
+          symbol: SYMBOL,
+          amount: SIZE,
+          takeProfit: TAKE_PROFIT,
+          stopLoss: STOP_LOSS
+        }),
+        muteHttpExceptions: true
+      });
+      Logger.log("주문 실행 결과: " + tradeRes.getContentText());
+    }
+    
+    const spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
+    let sheet = spreadsheet.getSheetByName("TradeLogs");
+    if (!sheet) {
+      sheet = spreadsheet.insertSheet("TradeLogs");
+      sheet.appendRow(["Timestamp", "Symbol", "Decision", "Analysis"]);
+    }
+    sheet.appendRow([new Date(), SYMBOL, data.decision, data.analysis_summary]);
+    
+  } catch (e) {
+    Logger.log("❌ 실행 오류: " + e.toString());
+  }
+}
+`;
+
+  const executeTrade = async (side: "LONG" | "SHORT", amount: string, isAuto: boolean = false) => {
+    try {
+      const response = await fetch(effectiveApiUrl + "/api/trade/execute", {
+        method: "POST",
+        headers: { 
+          "Content-Type": "application/json",
+          ...(apiKey ? { "x-bitget-api-key": apiKey } : {}),
+          ...(secretKey ? { "x-bitget-secret-key": secretKey } : {}),
+          ...(passphrase ? { "x-bitget-passphrase": passphrase } : {})
+        },
+        body: JSON.stringify({ side, symbol, amount, takeProfit, stopLoss }),
+      });
+      
+      const contentType = response.headers.get("content-type");
+      let data: any = {};
+      
+      if (contentType && contentType.includes("application/json")) {
+        data = await response.json();
+      } else {
+        const text = await response.text();
+        console.error("Trade Execution Non-JSON:", text);
+        data = { error: "서버 응답 형식이 올바르지 않습니다." };
+      }
+      
+      const newLog: TradeLog = {
+        id: Math.random().toString(36).substr(2, 9),
+        side,
+        symbol,
+        amount,
+        timestamp: new Date().toLocaleTimeString(),
+        status: response.ok ? "SUCCESS" : "FAILED",
+        reason: data.error
+      };
+      
+      setLogs(prev => [newLog, ...prev].slice(0, 50));
+      return response.ok;
+    } catch (err) {
+      console.error("Trade Execution Error:", err);
+      return false;
+    }
+  };
+
+  const [currentTime, setCurrentTime] = useState(new Date());
+
+  useEffect(() => {
+    const timer = setInterval(() => setCurrentTime(new Date()), 1000);
+    return () => clearInterval(timer);
   }, []);
 
-  // 독스 불러오기 (Apps Script 연동)
-  const handleLoadDocs = async () => {
-    if (!data.month) {
-      alert("불러올 월(Month)을 입력해주세요.");
-      return;
-    }
-    setIsLoadingDocs(true);
+  const performAnalysis = async () => {
+    setLoading(true);
+    setError(null);
     try {
-      const combinedSubject = data.subject + (data.subjectNumber || '');
-      const response = await fetch(`${scriptUrl}?action=load&month=${data.month}&subject=${combinedSubject}`);
-      const text = await response.text();
+      const response = await fetch(effectiveApiUrl + "/api/analyze", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ symbol, granularity }),
+      });
       
-      if (text.includes("App Script is running.")) {
-        alert("구글 앱 스크립트가 최신 버전으로 배포되지 않았습니다.\n앱 스크립트 편집기에서 코드를 수정한 후 반드시 '새 배포(New deployment)'를 진행해주세요.");
-        return;
+      const contentType = response.headers.get("content-type");
+      if (!contentType || !contentType.includes("application/json")) {
+        const text = await response.text();
+        console.error("Non-JSON response received:", text);
+        throw new Error("서버가 JSON 대신 HTML(웹페이지)을 반환했습니다. 앱을 새로고침하거나 공개 설정을 확인하세요.");
       }
 
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Analysis failed");
+      
+      setAnalysis(data);
+
+      // Auto Trading Logic
+      const currentCacheKey = `${symbol}_${granularity}`;
+      const isFirstView = !(currentCacheKey in lastSignalRef.current);
+      const previousDecision = lastSignalRef.current[currentCacheKey] || "HOLD";
+      
+      if (!isFirstView && isAutoTrade && data.decision !== "HOLD" && data.decision !== previousDecision) {
+        executeTrade(data.decision, orderSize, true);
+      }
+      
+      // Update ref anyway so it tracks properly even if auto trade is off
+      lastSignalRef.current[currentCacheKey] = data.decision;
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    performAnalysis();
+    const interval = setInterval(performAnalysis, 5 * 60 * 1000); 
+    return () => clearInterval(interval);
+  }, [isAutoTrade, symbol, granularity]);
+
+  useEffect(() => {
+    let balanceInterval: ReturnType<typeof setInterval>;
+    
+    const fetchBalance = async () => {
       try {
-        const result = JSON.parse(text);
-        if (result.status === 'success' && result.data) {
-          const loadedData = result.data;
-          // 저장 시 결합된 subject를 원래대로 복구
-          if (loadedData.baseSubject) {
-            loadedData.subject = loadedData.baseSubject;
-          } else if (loadedData.subjectNumber && loadedData.subject.endsWith(loadedData.subjectNumber)) {
-            loadedData.subject = loadedData.subject.slice(0, -loadedData.subjectNumber.length);
+        const res = await fetch(effectiveApiUrl + "/api/trade/balance", {
+          headers: {
+            ...(apiKey ? { "x-bitget-api-key": apiKey } : {}),
+            ...(secretKey ? { "x-bitget-secret-key": secretKey } : {}),
+            ...(passphrase ? { "x-bitget-passphrase": passphrase } : {})
           }
-          setData(loadedData);
-          alert(`${data.month}월 데이터를 성공적으로 불러왔습니다.`);
-        } else {
-          alert(`불러오기 실패: ${result.message}\n\n(해당 월의 저장된 데이터가 없거나 구글 앱 스크립트 권한 문제일 수 있습니다.)`);
-        }
-      } catch (e) {
-        console.error("JSON parse error:", text);
-        alert("데이터를 불러오는 중 오류가 발생했습니다.\n서버 응답: " + text.substring(0, 100));
-      }
-    } catch (error) {
-      console.error("Load docs error:", error);
-      alert("네트워크 오류가 발생했습니다.");
-    } finally {
-      setIsLoadingDocs(false);
-    }
-  };
+        });
+        if (res.ok) {
+          const data = await res.json();
+          setStats((prev: any) => {
+            const currentEq = data.equity;
+            const isInitial = prev.initialEquity === null;
+            const newProfit = isInitial ? 0 : currentEq - prev.initialEquity;
+            
+            // Check for realized jump (a simple heuristic for closed trades since we don't fetch order history here)
+            let wCount = prev.winCount;
+            let lCount = prev.lossCount;
+            
+            // If the PnL changes by more than $1 USDT suddenly (realized), we count it as a trade closing
+            const diff = prev.currentEquity !== null ? currentEq - prev.currentEquity : 0;
+            if (Math.abs(diff) > 1.0) {
+              if (diff > 0) wCount++;
+              else lCount++;
+            }
 
-  // 구글 드라이브 저장 (Apps Script 연동)
-  const saveToGoogleDrive = async () => {
-    setIsSavingToDrive(true);
-
-    try {
-      // 강사별 주차 순서 변경 로직 적용 (1-2-3-4, 2-3-4-1, 3-4-1-2, 4-3-2-1)
-      const combinedSubject = data.subject + (data.subjectNumber || '');
-      const modifiedData = {
-        ...data,
-        subject: combinedSubject,
-        baseSubject: data.subject,
-        instructors: data.instructors.map((instructor, index) => {
-          return {
-            ...instructor,
-            weeks: getRotatedWeeks(data.weeks, index)
-          };
-        })
-      };
-
-      const response = await fetch(scriptUrl, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'text/plain;charset=utf-8',
-        },
-        body: JSON.stringify(modifiedData),
-      });
-
-      const text = await response.text();
-      
-      if (text.includes("App Script is running.")) {
-        alert("구글 앱 스크립트가 최신 버전으로 배포되지 않았습니다.\n앱 스크립트 편집기에서 코드를 수정한 후 반드시 '새 배포(New deployment)'를 진행해주세요.");
-        return;
-      }
-
-      try {
-        const result = JSON.parse(text);
-        if (result.status === 'success') {
-          alert(`구글 드라이브 저장 성공!\n\n${result.message}`);
-        } else {
-          alert(`저장 실패: ${result.message}\n\n(구글 앱 스크립트 권한 문제일 수 있습니다. 앱 스크립트 편집기에서 코드를 한 번 '실행'하여 권한을 허용해주세요.)`);
-        }
-      } catch (e) {
-        console.error("JSON parse error:", text);
-        alert("저장 중 오류가 발생했습니다.\n서버 응답: " + text.substring(0, 100));
-      }
-    } catch (error) {
-      console.error("Google Drive save error:", error);
-      alert("네트워크 오류가 발생했습니다. CORS 문제이거나 앱 스크립트 URL이 잘못되었을 수 있습니다.");
-    } finally {
-      setIsSavingToDrive(false);
-    }
-  };
-
-  // 주차별 데이터 업데이트 함수
-  const updateWeek = (idx: number, field: keyof WeekData, value: string | boolean) => {
-    setData(prev => {
-      const newWeeks = [...prev.weeks];
-      newWeeks[idx] = { ...newWeeks[idx], [field]: value };
-      return { ...prev, weeks: newWeeks };
-    });
-  };
-
-  // 이미지 파일 업로드 처리 함수 (Base64 변환)
-  const handleImageUpload = (idx: number, e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
-      compressImage(file).then((imgData) => {
-        updateWeek(idx, 'image', imgData);
-      });
-    }
-  };
-
-  // 이미지 붙여넣기 처리 함수
-  const handlePaste = (idx: number, e: React.ClipboardEvent<HTMLDivElement>) => {
-    const items = e.clipboardData.items;
-    for (let i = 0; i < items.length; i++) {
-      if (items[i].type.indexOf('image') !== -1) {
-        const file = items[i].getAsFile();
-        if (file) {
-          compressImage(file).then((imgData) => {
-            updateWeek(idx, 'image', imgData);
+            return {
+              ...prev,
+              initialEquity: isInitial ? currentEq : prev.initialEquity,
+              currentEquity: currentEq,
+              totalProfit: newProfit,
+              unrealizedPL: data.unrealizedPL,
+              winCount: wCount,
+              lossCount: lCount
+            };
           });
         }
-        break;
+      } catch (e) {
+        console.error("Failed to fetch balance", e);
       }
+    };
+
+    if (isAutoTrade) {
+      balanceInterval = setInterval(fetchBalance, 30000); // 30 seconds
+    }
+    fetchBalance(); // Always fetch on mount or when dependencies change
+    return () => clearInterval(balanceInterval);
+  }, [isAutoTrade, effectiveApiUrl]);
+
+  const getStatusColor = (decision: Decision) => {
+    switch (decision) {
+      case "LONG": return "text-emerald-500 bg-emerald-500/10 border-emerald-500/20";
+      case "SHORT": return "text-rose-500 bg-rose-500/10 border-rose-500/20";
+      default: return "text-slate-400 bg-slate-400/10 border-slate-400/20";
     }
   };
 
-  // AI 자동 작성 함수
-  const handleAIGeneration = async (idx: number) => {
-    if (!ai) {
-      alert("AI 기능이 설정되지 않았습니다. (API 키 누락)");
-      return;
-    }
-    const week = data.weeks[idx];
-    if (!week.image) {
-      alert("먼저 교구 사진을 등록(또는 붙여넣기) 해주세요.");
-      return;
-    }
-    
-    if (week.image.includes('unsplash.com')) {
-      alert("기본 예시 이미지는 AI 분석이 불가능합니다. 실제 교구 사진을 등록해주세요.");
-      return;
-    }
-
-    updateWeek(idx, 'isGenerating', true);
-
-    let subjectPrompt = "";
-    if (data.subject === '음악') {
-      subjectPrompt = "반드시 '음악'과 관련된 내용(청각 자극, 리듬감, 음악적 표현, 정서적 안정 등)을 중심으로 목표와 기대효과, 전반적 평가를 작성해줘.";
-    } else if (data.subject === '노래') {
-      subjectPrompt = `반드시 마이크, 스피커 등 기기에 대한 언급은 빼고 '노래 부르기' 활동 자체에 집중해줘.
-      [목표] 친숙한 노래, 기억을 끌어내 회상하기, 공감하기, 긍정적인 마인드, 박자, 호흡 조절, 노래의 문화적 배경, 음악 스타일 등을 상황에 맞게 조합해줘.
-      [기대효과 및 평가] 스트레스 감소, 호흡 및 발성 도움, 자신감 획득, 상호작용, 외로움 감소 및 정서적 안정 등을 조합해줘. 더 좋은 내용이 있다면 추가해도 좋아.`;
-    } else if (data.subject === '체조') {
-      subjectPrompt = "반드시 '신체활동'과 관련된 내용(대소근육 발달, 신체 조절 능력, 유연성, 혈액순환 등)을 중심으로 목표와 기대효과, 전반적 평가를 작성해줘.";
-    } else if (data.subject === '전래') {
-      subjectPrompt = "반드시 '음악적 요소(노래, 리듬 등)'는 완전히 빼고, '게임적 요소(규칙 이해, 놀이 참여, 협동, 흥미 유발 등)'와 '신체활동'을 중심으로 목표와 기대효과, 전반적 평가를 작성해줘.";
-    } else if (data.subject === '교구') {
-      subjectPrompt = "반드시 '인지 및 소근육' 발달과 관련된 내용(집중력, 기억력, 손끝 조작 능력, 두뇌 자극 등)을 중심으로 목표와 기대효과, 전반적 평가를 작성해줘.";
-    }
-
-    try {
-      // 1. 사진 분석 (교구명, 계획안 목표, 기대효과)
-      const mimeType = week.image.match(/data:([a-zA-Z0-9]+\/[a-zA-Z0-9-.+]+).*,.*/)?.[1] || 'image/jpeg';
-      const base64Data = week.image.split(',')[1];
-
-      if (!base64Data) {
-        throw new Error("이미지 데이터가 올바르지 않습니다.");
-      }
-
-      let firstPromptText = `이 사진에 있는 교구(악기 또는 도구)의 이름을 알려주고, 노인 대상 음악/인지/신체 프로그램에서 이 교구를 사용할 때의 '수업 목표'와 '기대 효과'를 작성해줘.`;
-      if (data.subject === '노래') {
-        firstPromptText = `현재 수업은 '노래' 과목이야. 사진을 참고하되, 마이크나 스피커 같은 기기 이름은 toolName에 넣지 말고 '노래 부르기'나 빈칸으로 해줘. 기기 사용법이 아닌 '노래 부르기' 활동 자체의 '수업 목표'와 '기대 효과'를 작성해줘.`;
-      }
-
-      const imageResponse = await ai.models.generateContent({
-        model: "gemini-3-flash-preview",
-        contents: {
-          parts: [
-            { inlineData: { mimeType, data: base64Data } },
-            { text: `${firstPromptText}
-            ${week.additionalMaterial ? `\n[추가 교구 및 게임 정보]\n사용자가 다음 추가 교구/게임을 입력했습니다: "${week.additionalMaterial}"\n수업 목표를 작성할 때, 사진 속 교구와 이 추가 교구/게임을 함께 활용하는 내용을 목표로 작성해줘.` : ''}
-            ${subjectPrompt}
-            응답은 반드시 JSON 형식으로 작성하며, 다음 스키마를 따라야 해:
-            {
-              "toolName": "교구 이름 (예: 막대탬버린, 소고 등)",
-              "goal": "수업 목표 (1~2문장)",
-              "expectedEffect": "기대 효과 (1~2문장)"
-            }` }
-          ]
-        },
-        config: {
-          responseMimeType: "application/json",
-          responseSchema: {
-            type: Type.OBJECT,
-            properties: {
-              toolName: { type: Type.STRING },
-              goal: { type: Type.STRING },
-              expectedEffect: { type: Type.STRING }
-            },
-            required: ["toolName", "goal", "expectedEffect"]
-          }
-        }
-      });
-
-      const imageResult = JSON.parse(imageResponse.text || "{}");
-      
-      // 2. 계획안 바탕으로 일지 내용 생성
-      const planResponse = await ai.models.generateContent({
-        model: "gemini-3-flash-preview",
-        contents: `다음은 노인 대상 프로그램의 계획안 내용이야.
-        - 교구명: ${imageResult.toolName}
-        - 계획안 목표: ${imageResult.goal}
-        - 계획안 기대효과: ${imageResult.expectedEffect}
-        
-        이 내용을 바탕으로 실제 수업을 진행한 후 작성하는 '일지'의 내용을 작성해줘.
-        ${subjectPrompt}
-        1. 일지 목표: 계획안 목표를 바탕으로 작성하되, 실제 달성하고자 했던 구체적인 목표 2가지를 작성해줘. (예: 1. ~한다. 2. ~한다.)
-        2. 전반적 평가(모니터링): 위 목표와 기대효과가 실제 수업에서 어떻게 나타났는지, 어르신들의 반응과 참여도, 변화 등을 포함하여 3~4문장으로 구체적으로 작성해줘.
-        
-        응답은 반드시 JSON 형식으로 작성하며, 다음 스키마를 따라야 해:
-        {
-          "journalGoal": "일지 목표 2가지 (번호를 매겨서 작성)",
-          "evaluation": "전반적 평가 내용"
-        }`,
-        config: {
-          responseMimeType: "application/json",
-          responseSchema: {
-            type: Type.OBJECT,
-            properties: {
-              journalGoal: { type: Type.STRING },
-              evaluation: { type: Type.STRING }
-            },
-            required: ["journalGoal", "evaluation"]
-          }
-        }
-      });
-
-      const planResult = JSON.parse(planResponse.text || "{}");
-
-      // 상태 업데이트 (최신 상태 기반)
-      setData(prev => {
-        const newWeeks = [...prev.weeks];
-        newWeeks[idx] = {
-          ...newWeeks[idx],
-          toolName: imageResult.toolName || newWeeks[idx].toolName,
-          goal: imageResult.goal || newWeeks[idx].goal,
-          expectedEffect: imageResult.expectedEffect || newWeeks[idx].expectedEffect,
-          journalGoal: planResult.journalGoal || newWeeks[idx].journalGoal,
-          evaluation: planResult.evaluation || newWeeks[idx].evaluation,
-          isGenerating: false
-        };
-        return { ...prev, weeks: newWeeks };
-      });
-
-    } catch (error) {
-      console.error("AI Generation Error:", error);
-      alert("AI 자동 작성 중 오류가 발생했습니다.");
-      updateWeek(idx, 'isGenerating', false);
+  const getStatusIcon = (decision: Decision) => {
+    switch (decision) {
+      case "LONG": return <TrendingUp className="w-8 h-8" />;
+      case "SHORT": return <TrendingDown className="w-8 h-8" />;
+      default: return <Minus className="w-8 h-8" />;
     }
   };
 
-  // 인쇄하기
-  const handlePrint = () => {
-    window.print();
-  };
-
-  if (!isLoggedIn) {
-    if (isSigningUp) {
-      return <SignupPage onNavigateToLogin={() => setIsSigningUp(false)} />;
-    }
-    return <LoginPage onLogin={(email) => { setIsLoggedIn(true); setLoggedInEmail(email); }} onNavigateToSignup={() => setIsSigningUp(true)} />;
-  }
+  const chartData = analysis ? analysis.lastPrices.map((price, i) => ({
+    time: i,
+    price,
+    rsi: analysis.indicators.rsi[i] || 0,
+    macd: analysis.indicators.macd[i]?.MACD || 0,
+    signal: analysis.indicators.macd[i]?.signal || 0,
+    histogram: analysis.indicators.macd[i]?.histogram || 0,
+  })) : [];
 
   return (
-    <div className="min-h-screen bg-gray-100 font-sans">
-      {/* 로딩 오버레이 */}
-      {isSavingToDrive && (
-        <div className="fixed inset-0 bg-black/50 flex flex-col items-center justify-center z-50 backdrop-blur-sm">
-          <div className="bg-white p-8 rounded-2xl shadow-2xl flex flex-col items-center max-w-sm w-full mx-4 text-center">
-            <div className="relative w-20 h-20 mb-6">
-              <div className="absolute inset-0 border-4 border-yellow-100 rounded-full"></div>
-              <div className="absolute inset-0 border-4 border-yellow-600 rounded-full border-t-transparent animate-spin"></div>
-              <div className="absolute inset-0 flex items-center justify-center text-yellow-600">
-                <CloudUpload size={28} className="animate-pulse" />
+    <div className="min-h-screen bg-[#0a0c10] text-slate-200 font-sans p-4 md:p-8">
+      <div className="max-w-5xl mx-auto space-y-6">
+        {/* Header */}
+        <header className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+          <div className="flex items-center gap-3">
+            <div className="p-2 bg-blue-600 rounded-lg">
+              <BarChart2 className="w-6 h-6 text-white" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <h1 className="text-xl font-bold tracking-tight text-white">Janggo Algorithmic Trader</h1>
+                <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-slate-800 text-slate-400 border border-slate-700/50">v3.7.0</span>
+              </div>
+              <div className="flex items-center gap-3 mt-0.5">
+                <p className="text-[10px] text-slate-500 font-mono flex items-center gap-2">
+                  <span className="flex items-center gap-1.5">
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+                    LIVE_SYSTEM
+                  </span>
+                  <span className="text-[#30363d]">|</span>
+                  <span>UTC: {currentTime.toISOString().split('T')[1].split('.')[0]}</span>
+                  {isAutoTrade && (
+                    <span className="flex items-center gap-1 text-blue-500 font-bold">
+                      <span className="text-[#30363d]">|</span>
+                      AUTOTRADE_ON
+                    </span>
+                  )}
+                </p>
               </div>
             </div>
-            <h3 className="text-xl font-bold text-gray-900 mb-2">구글 드라이브에 저장 중입니다</h3>
-            <p className="text-gray-500 text-sm leading-relaxed">
-              강사 4명의 계획안과 일지(총 8개)를 생성하고 있습니다.<br/>
-              약 30~60초 정도 소요될 수 있습니다.
-            </p>
           </div>
-        </div>
-      )}
-
-      {/* 화면에만 보이는 UI 영역 (인쇄 시 숨김 처리) */}
-      <div className="max-w-7xl mx-auto p-4 sm:p-8 no-print space-y-6">
-        {/* 상단 헤더 및 탭 메뉴 */}
-        <div className="flex flex-col sm:flex-row justify-between items-center bg-white p-6 rounded-xl shadow-sm gap-4">
-          <div className="flex items-center gap-3">
-            <FileText className="text-blue-600" size={28} />
-            <h1 className="text-2xl font-bold text-gray-800">교육 문서 자동화 시스템</h1>
+          
+          <div className="flex items-center gap-2 bg-[#161b22] p-1 rounded-lg border border-[#30363d]">
+             <button 
+               onClick={() => setActiveTab("analysis")}
+               className={cn("px-4 py-1.5 text-xs font-medium rounded-md transition-all", activeTab === "analysis" ? "bg-[#30363d] text-white" : "text-slate-500 hover:text-slate-300")}
+             >
+               ANALYSIS
+             </button>
+             <button 
+               onClick={() => setActiveTab("trading")}
+               className={cn("px-4 py-1.5 text-xs font-medium rounded-md transition-all", activeTab === "trading" ? "bg-[#30363d] text-white" : "text-slate-500 hover:text-slate-300")}
+             >
+               TRADING
+             </button>
           </div>
-          <div className="flex flex-wrap gap-2 justify-center">
-            <button 
-              onClick={() => setActiveTab('form')} 
-              className={`px-4 py-2 rounded-lg font-medium transition-colors ${activeTab === 'form' ? 'bg-gray-800 text-white' : 'bg-gray-200 text-gray-700 hover:bg-gray-300'}`}
-            >
-              데이터 입력
-            </button>
-            <button 
-              onClick={() => setActiveTab('preview')} 
-              className={`px-4 py-2 rounded-lg font-medium transition-colors ${activeTab === 'preview' ? 'bg-gray-800 text-white' : 'bg-gray-200 text-gray-700 hover:bg-gray-300'}`}
-            >
-              미리보기
-            </button>
+        </header>
+
+        {error && (
+          <div className="p-4 bg-rose-500/10 border border-rose-500/20 rounded-lg flex items-center gap-3 text-rose-500 text-sm">
+            <AlertCircle className="w-5 h-5 flex-shrink-0" />
+            <p>{error}</p>
           </div>
-          <div className="flex flex-wrap gap-3 w-full sm:w-auto">
-            <button 
-              onClick={handlePrint}
-              className="flex items-center gap-2 bg-green-600 text-white px-6 py-2 rounded-lg font-medium hover:bg-green-700 transition-colors"
+        )}
+
+        <AnimatePresence mode="wait">
+          {activeTab === "analysis" ? (
+            <motion.div 
+              key="analysis"
+              initial={{ opacity: 0, x: -20 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: 20 }}
+              className="space-y-6"
             >
-              <Printer size={20} />
-              인쇄하기
-            </button>
-            <button 
-              onClick={saveToGoogleDrive}
-              disabled={isSavingToDrive}
-              className="flex items-center gap-2 bg-yellow-600 text-white px-6 py-2 rounded-lg font-medium hover:bg-yellow-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              {isSavingToDrive ? (
-                <Loader2 size={20} className="animate-spin" />
-              ) : (
-                <CloudUpload size={20} />
-              )}
-              {isSavingToDrive ? '저장 중...' : '독스 저장'}
-            </button>
-            <button 
-              onClick={handleLoadDocs}
-              disabled={isLoadingDocs}
-              className="flex items-center gap-2 bg-indigo-600 text-white px-6 py-2 rounded-lg font-medium hover:bg-indigo-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              {isLoadingDocs ? <Loader2 size={20} className="animate-spin" /> : <Download size={20} />}
-              {isLoadingDocs ? '불러오는 중...' : '독스 불러오기'}
-            </button>
-          </div>
-        </div>
-
-        {/* 탭 내용 */}
-        {activeTab === 'form' ? (
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-            {/* 좌측: 기본 정보 및 강사 정보 입력 */}
-            <div className="space-y-8">
-              <div className="bg-white p-6 rounded-xl shadow-sm space-y-6">
-                <h2 className="text-lg font-semibold border-b pb-2 flex items-center gap-2">
-                  <Settings size={18} /> 기본 정보
-                </h2>
-                
-                <div className="space-y-4">
-                  {/* 첫 번째 줄: 년도, 월 */}
-                  <div className="grid grid-cols-2 gap-4">
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-1">년도 (Year)</label>
-                      <input 
-                        type="text" 
-                        value={data.year || ''} 
-                        onChange={e => {
-                          const newYear = e.target.value;
-                          setData(prev => {
-                            const newWeeks = prev.weeks.map((week, idx) => {
-                              const newDate = getWeekRange(parseInt(newYear, 10) || new Date().getFullYear(), prev.month, idx);
-                              return { ...week, date: newDate || week.date };
-                            });
-                            return { ...prev, year: newYear, weeks: newWeeks };
-                          });
-                        }} 
-                        className="w-full border border-gray-300 rounded-md p-2 focus:ring-2 focus:ring-blue-500 outline-none" 
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-1">월 (Month)</label>
-                      <input 
-                        type="text" 
-                        value={data.month || ''} 
-                        onChange={e => {
-                          const newMonth = e.target.value;
-                          setData(prev => {
-                            const newWeeks = prev.weeks.map((week, idx) => {
-                              const newDate = getWeekRange(parseInt(prev.year, 10) || new Date().getFullYear(), newMonth, idx);
-                              return { ...week, date: newDate || week.date };
-                            });
-                            return { ...prev, month: newMonth, weeks: newWeeks };
-                          });
-                        }} 
-                        className="w-full border border-gray-300 rounded-md p-2 focus:ring-2 focus:ring-blue-500 outline-none" 
-                      />
-                    </div>
-                  </div>
-
-                  {/* 두 번째 줄: 과목 선택 */}
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">과목 (Subject)</label>
-                    <div className="flex items-center justify-between bg-gray-50 px-3 py-2.5 rounded-md border border-gray-300">
-                      {['음악', '체조', '전래', '교구', '노래'].map(cat => (
-                        <label key={cat} className="flex items-center gap-1.5 cursor-pointer shrink-0">
-                          <input 
-                            type="radio" 
-                            name="category" 
-                            value={cat} 
-                            checked={data.subject === cat}
-                            onChange={(e) => {
-                              const newSubject = e.target.value;
-                              const templates = categoryTemplates[newSubject];
-                              setData(prev => ({
-                                ...prev,
-                                subject: newSubject,
-                                planTemplateId: templates?.plan || '',
-                                journalTemplateId: templates?.journal || ''
-                              }));
-                            }}
-                            className="text-indigo-600 focus:ring-indigo-500 w-4 h-4"
-                          />
-                          <span className="text-sm font-medium text-gray-700 whitespace-nowrap">{cat}</span>
-                        </label>
-                      ))}
-                    </div>
-                  </div>
-
-                  {/* 세 번째 줄: 공통 음악체조 */}
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-1">공통 음악체조</label>
-                      <input 
-                        type="text" 
-                        value={data.musicGymnastics || ''} 
-                        onChange={e => setData({...data, musicGymnastics: e.target.value})} 
-                        className="w-full border border-gray-300 rounded-md p-2 focus:ring-2 focus:ring-blue-500 outline-none" 
-                        placeholder="예: 개나리처녀" 
-                      />
-                    </div>
-                    {/* 과목 번호 */}
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-1">과목 번호</label>
-                      <input 
-                        type="text" 
-                        value={data.subjectNumber || ''} 
-                        onChange={e => setData({...data, subjectNumber: e.target.value})} 
-                        className="w-full border border-gray-300 rounded-md p-2 focus:ring-2 focus:ring-blue-500 outline-none" 
-                        placeholder="예: 1 (입력 시 음악1 등으로 저장됨)" 
-                      />
-                    </div>
-                  </div>
-                </div>
-
-                {/* 네 번째 줄: 이메일 자동 보내기 버튼 */}
-                <div className="pt-4">
+              <div className="flex items-center justify-between gap-4">
+                <div className="flex items-center gap-2 bg-[#161b22] p-1 rounded-lg border border-[#30363d]">
                   <button 
-                    onClick={() => window.open(`https://janggo-center-auto-email.vercel.app?autoLoginEmail=${encodeURIComponent(loggedInEmail)}`, '_blank')}
-                    className="flex items-center justify-center gap-2 bg-green-600 text-white px-4 py-3 rounded-lg font-medium hover:bg-green-700 transition-colors w-full shadow-sm"
+                    onClick={() => setAnalysisView("indicators")}
+                    className={cn("px-4 py-1 text-[10px] font-bold rounded transition-all", analysisView === "indicators" ? "bg-blue-600 text-white" : "text-slate-500 hover:text-slate-300")}
                   >
-                    <Mail size={20} />
-                    이메일 자동 보내기
+                    INDICATORS
+                  </button>
+                  <button 
+                    onClick={() => setAnalysisView("live")}
+                    className={cn("px-4 py-1 text-[10px] font-bold rounded transition-all", analysisView === "live" ? "bg-blue-600 text-white" : "text-slate-500 hover:text-slate-300")}
+                  >
+                    LIVE_CHART
                   </button>
                 </div>
 
-                <div className="mt-6 pt-6 border-t">
-                  <h3 className="text-sm font-semibold text-gray-700 mb-3">주차별 교구 이미지 (클릭/붙여넣기)</h3>
-                  <div className="grid grid-cols-2 gap-4">
-                    {data.weeks.map((week, idx) => (
-                      <div key={`img-${idx}`} className="group">
-                        <label className="block text-xs font-medium text-gray-600 mb-1 group-focus-within:text-blue-600 transition-colors">{idx + 1}주차</label>
-                        <div 
-                          className="week-image-container border-2 border-dashed border-gray-300 rounded-lg p-2 text-center cursor-pointer hover:bg-gray-100 focus:border-blue-500 focus:ring-2 focus:ring-blue-200 outline-none transition-all bg-white relative h-28 flex flex-col items-center justify-center"
-                          onPaste={(e) => handlePaste(idx, e)}
-                          onClick={() => fileInputRefs.current[idx]?.click()}
-                          tabIndex={0}
-                        >
-                          {week.image ? (
-                            <img src={week.image} alt="preview" className="max-h-full object-contain mx-auto" />
-                          ) : (
-                            <div className="text-gray-400 flex flex-col items-center gap-1">
-                              <Upload size={16} />
-                              <p className="text-[10px] leading-tight">클릭 또는<br/>Ctrl+V</p>
-                            </div>
-                          )}
-                          <input 
-                            type="file" 
-                            accept="image/*" 
-                            className="hidden" 
-                            ref={el => fileInputRefs.current[idx] = el}
-                            onChange={(e) => handleImageUpload(idx, e)} 
-                          />
-                        </div>
-                      </div>
-                    ))}
-                  </div>
+                <div className="flex items-center gap-4 text-xs font-mono text-slate-500">
+                  <select 
+                    value={symbol} 
+                    onChange={(e) => setSymbol(e.target.value)}
+                    className="bg-transparent border-none focus:ring-0 text-blue-400 cursor-pointer"
+                  >
+                    <option value="BTCUSDT">BTC/USDT</option>
+                    <option value="ETHUSDT">ETH/USDT</option>
+                  </select>
+                  <div className="w-px h-3 bg-[#30363d]" />
+                  <select 
+                    value={granularity} 
+                    onChange={(e) => setGranularity(e.target.value)}
+                    className="bg-transparent border-none focus:ring-0 text-slate-400 cursor-pointer text-xs"
+                  >
+                    <option value="15m">15m</option>
+                    <option value="1H">1H</option>
+                    <option value="4H">4H</option>
+                    <option value="1D">1D</option>
+                  </select>
                 </div>
               </div>
 
-              <div className="bg-white p-6 rounded-xl shadow-sm space-y-4">
-                <h2 className="text-lg font-semibold border-b pb-2 flex items-center gap-2">
-                  <Users size={18} /> 강사 정보 (4명)
-                </h2>
-                {data.instructors.map((inst, idx) => (
-                  <div key={inst.id} className="grid grid-cols-1 gap-3 bg-gray-50 p-3 rounded-lg border border-gray-100">
-                    <div className="grid grid-cols-2 gap-3">
-                      <div>
-                        <label className="block text-xs font-medium text-gray-600 mb-1">강사 {idx + 1} 이름</label>
-                        <input type="text" value={inst.name || ''} onChange={e => {
-                          const newInsts = [...data.instructors];
-                          newInsts[idx].name = e.target.value;
-                          setData({...data, instructors: newInsts});
-                        }} className="w-full border border-gray-300 rounded-md p-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none" />
+              {analysisView === "live" ? (
+                <div className="bg-[#161b22] border border-[#30363d] rounded-2xl p-2 h-[600px] overflow-hidden shadow-2xl relative group">
+                  <div className="absolute top-4 left-4 z-10 opacity-0 group-hover:opacity-100 transition-opacity">
+                    <span className="bg-blue-600 text-white text-[10px] font-bold px-2 py-1 rounded shadow-lg">LIVE BITGET FEED</span>
+                  </div>
+                  <iframe 
+                    src={`https://s.tradingview.com/widgetembed/?symbol=BITGET:${symbol}.P&interval=${granularity === '1H' ? '60' : granularity === '15m' ? '15' : granularity === '4H' ? '240' : 'D'}&theme=dark&style=1&timezone=Etc%2FUTC&studies=%5B%5D&locale=en`}
+                    width="100%"
+                    height="100%"
+                    frameBorder="0"
+                    allowFullScreen
+                    className="rounded-xl"
+                  ></iframe>
+                </div>
+              ) : (
+                <>
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                    <motion.div 
+                      className={cn(
+                        "md:col-span-1 border rounded-2xl p-6 flex flex-col justify-center items-center text-center space-y-4 shadow-2xl transition-all duration-500",
+                        analysis ? getStatusColor(analysis.decision) : "border-[#30363d] bg-[#161b22]"
+                      )}
+                    >
+                      <div className="text-sm font-medium opacity-60 uppercase tracking-widest">Target Signal</div>
+                      <div className="p-4 rounded-full bg-white/5 border border-white/10">
+                        {analysis ? getStatusIcon(analysis.decision) : <RefreshCw className="w-8 h-8 animate-spin opacity-20" />}
                       </div>
-                      <div>
-                        <label className="block text-xs font-medium text-gray-600 mb-1">연락처 1</label>
-                        <input type="text" value={inst.phone1 || ''} onChange={e => {
-                          const newInsts = [...data.instructors];
-                          newInsts[idx].phone1 = e.target.value;
-                          setData({...data, instructors: newInsts});
-                        }} className="w-full border border-gray-300 rounded-md p-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none" />
+                      <div className="text-4xl font-black tracking-tighter">
+                        {loading ? "ANALYZING..." : (analysis?.decision || "HOLD")}
                       </div>
-                    </div>
-                    <div className="grid grid-cols-2 gap-3">
+                    </motion.div>
+    
+                    <div className="md:col-span-2 bg-[#161b22] border border-[#30363d] rounded-2xl p-6 flex flex-col justify-between">
                       <div>
-                        <label className="block text-xs font-medium text-gray-600 mb-1">연락처 2 (선택)</label>
-                        <input type="text" value={inst.phone2 || ''} onChange={e => {
-                          const newInsts = [...data.instructors];
-                          newInsts[idx].phone2 = e.target.value;
-                          setData({...data, instructors: newInsts});
-                        }} className="w-full border border-gray-300 rounded-md p-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none" />
+                        <h3 className="text-slate-500 text-xs font-mono mb-4 uppercase tracking-widest flex items-center gap-2">
+                          <span className="w-2 h-2 rounded-full bg-blue-500 animate-pulse" />
+                          Logic Summary (Korean)
+                        </h3>
+                        <p className="text-xl font-medium leading-relaxed text-slate-100">
+                          {loading ? "분석 중입니다..." : (analysis?.analysis_summary || "데이터를 불러오는 중...")}
+                        </p>
                       </div>
-                      <div>
-                        <label className="block text-xs font-medium text-gray-600 mb-1">연락처 3 (선택)</label>
-                        <input type="text" value={inst.phone3 || ''} onChange={e => {
-                          const newInsts = [...data.instructors];
-                          newInsts[idx].phone3 = e.target.value;
-                          setData({...data, instructors: newInsts});
-                        }} className="w-full border border-gray-300 rounded-md p-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none" />
+                      <div className="mt-6 flex items-center gap-4 text-xs font-mono text-slate-500">
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-slate-400">RSI:</span>
+                          <span className={cn(analysis && (analysis.indicators.rsi[analysis.indicators.rsi.length - 1] < 30 ? "text-emerald-500" : analysis.indicators.rsi[analysis.indicators.rsi.length - 1] > 70 ? "text-rose-500" : ""))}>
+                            {analysis?.indicators.rsi[analysis.indicators.rsi.length - 1].toFixed(2) || "0.00"}
+                          </span>
+                        </div>
                       </div>
                     </div>
                   </div>
-                ))}
-              </div>
-            </div>
+    
+                  {/* Strategy Checklist */}
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <div className="bg-[#161b22] border border-[#30363d] rounded-2xl p-6">
+                       <h3 className="text-sm font-bold text-emerald-500 mb-4 flex items-center gap-2">
+                          <TrendingUp className="w-4 h-4" />
+                          LONG Entry Checklist
+                       </h3>
+                       <div className="space-y-3">
+                          <div className="flex items-center justify-between p-3 bg-[#0d1117] rounded-xl border border-[#30363d]">
+                             <span className="text-xs text-slate-400">RSI 30 이하에서 반등 (과매도 탈출)</span>
+                             {analysis && (analysis.indicators.rsi[analysis.indicators.rsi.length - 2] <= 30 && analysis.indicators.rsi[analysis.indicators.rsi.length - 1] > analysis.indicators.rsi[analysis.indicators.rsi.length - 2]) ? 
+                               <div className="w-5 h-5 rounded-full bg-emerald-500 flex items-center justify-center"><Play className="w-3 h-3 text-white fill-current" /></div> : 
+                               <div className="w-5 h-5 rounded-full bg-slate-800 border border-slate-700" />
+                             }
+                          </div>
+                          <div className="flex items-center justify-between p-3 bg-[#0d1117] rounded-xl border border-[#30363d]">
+                             <span className="text-xs text-slate-400">MACD 골든 크로스 (Signal 돌파)</span>
+                             {analysis && analysis.indicators.macd.length >= 2 && 
+                              (analysis.indicators.macd[analysis.indicators.macd.length - 2]?.MACD! < analysis.indicators.macd[analysis.indicators.macd.length - 2]?.signal! && 
+                               analysis.indicators.macd[analysis.indicators.macd.length - 1]?.MACD! > analysis.indicators.macd[analysis.indicators.macd.length - 1]?.signal!) ? 
+                               <div className="w-5 h-5 rounded-full bg-emerald-500 flex items-center justify-center"><Play className="w-3 h-3 text-white fill-current" /></div> : 
+                               <div className="w-5 h-5 rounded-full bg-slate-800 border border-slate-700" />
+                             }
+                          </div>
+                       </div>
+                    </div>
+    
+                    <div className="bg-[#161b22] border border-[#30363d] rounded-2xl p-6">
+                       <h3 className="text-sm font-bold text-rose-500 mb-4 flex items-center gap-2">
+                          <TrendingDown className="w-4 h-4" />
+                          SHORT Entry Checklist
+                       </h3>
+                       <div className="space-y-3">
+                          <div className="flex items-center justify-between p-3 bg-[#0d1117] rounded-xl border border-[#30363d]">
+                             <span className="text-xs text-slate-400">RSI 70 이상에서 하락 반전 (과열 해소)</span>
+                             {analysis && (analysis.indicators.rsi[analysis.indicators.rsi.length - 2] >= 70 && analysis.indicators.rsi[analysis.indicators.rsi.length - 1] < analysis.indicators.rsi[analysis.indicators.rsi.length - 2]) ? 
+                               <div className="w-5 h-5 rounded-full bg-rose-500 flex items-center justify-center"><Square className="w-3 h-3 text-white fill-current" /></div> : 
+                               <div className="w-5 h-5 rounded-full bg-slate-800 border border-slate-700" />
+                             }
+                          </div>
+                          <div className="flex items-center justify-between p-3 bg-[#0d1117] rounded-xl border border-[#30363d]">
+                             <span className="text-xs text-slate-400">MACD 데드 크로스 (Signal 하향)</span>
+                             {analysis && analysis.indicators.macd.length >= 2 && 
+                              (analysis.indicators.macd[analysis.indicators.macd.length - 2]?.MACD! > analysis.indicators.macd[analysis.indicators.macd.length - 2]?.signal! && 
+                               analysis.indicators.macd[analysis.indicators.macd.length - 1]?.MACD! < analysis.indicators.macd[analysis.indicators.macd.length - 1]?.signal!) ? 
+                               <div className="w-5 h-5 rounded-full bg-rose-500 flex items-center justify-center"><Square className="w-3 h-3 text-white fill-current" /></div> : 
+                               <div className="w-5 h-5 rounded-full bg-slate-800 border border-slate-700" />
+                             }
+                          </div>
+                       </div>
+                    </div>
+                  </div>
+    
+                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                    <div className="bg-[#161b22] border border-[#30363d] rounded-2xl p-6 h-[400px]">
+                       <div className="flex items-center justify-between mb-4">
+                          <h3 className="text-xs font-mono text-slate-500 uppercase tracking-widest flex items-center gap-2">
+                             <BarChart2 className="w-3 h-3" />
+                             MACD & Price Convergence
+                          </h3>
+                          {analysis && analysis.indicators.macd.length > 0 && (
+                            <div className="text-[10px] flex items-center gap-2">
+                               <span className={cn("px-2 py-0.5 rounded", (analysis.indicators.macd[analysis.indicators.macd.length - 1]?.MACD || 0) > (analysis.indicators.macd[analysis.indicators.macd.length - 1]?.signal || 0) ? "bg-emerald-500/10 text-emerald-500" : "bg-rose-500/10 text-rose-500")}>
+                                  {(analysis.indicators.macd[analysis.indicators.macd.length - 1]?.MACD || 0) > (analysis.indicators.macd[analysis.indicators.macd.length - 1]?.signal || 0) ? "BULLISH CROSS" : "BEARISH CROSS"}
+                               </span>
+                            </div>
+                          )}
+                       </div>
+                       <ResponsiveContainer width="100%" height="90%" minWidth={1} minHeight={1}>
+                          <ComposedChart data={chartData}>
+                            <CartesianGrid strokeDasharray="3 3" stroke="#30363d" vertical={false} />
+                            <XAxis dataKey="time" hide />
+                            <YAxis hide domain={['auto', 'auto']} />
+                            <Tooltip contentStyle={{ backgroundColor: '#0d1117', border: '1px solid #30363d', borderRadius: '8px' }} />
+                            <Bar dataKey="histogram" fill="#475569" opacity={0.3} />
+                            <Line type="monotone" dataKey="price" stroke="#3b82f6" strokeWidth={2} dot={false} />
+                            <Line type="monotone" dataKey="macd" stroke="#f59e0b" strokeWidth={1.5} dot={false} />
+                            <Line type="monotone" dataKey="signal" stroke="#8b5cf6" strokeWidth={1.5} dot={false} />
+                          </ComposedChart>
+                       </ResponsiveContainer>
+                    </div>
+                    <div className="bg-[#161b22] border border-[#30363d] rounded-2xl p-6 h-[400px]">
+                       <h3 className="text-xs font-mono text-slate-500 mb-4 uppercase tracking-widest flex items-center justify-between">
+                         Relative Strength Index (14)
+                         <span className="text-[10px] text-indigo-400 bg-indigo-400/10 px-2 py-0.5 rounded">Strategy Zones</span>
+                       </h3>
+                       <ResponsiveContainer width="100%" height="90%" minWidth={1} minHeight={1}>
+                          <AreaChart data={chartData}>
+                            <CartesianGrid strokeDasharray="3 3" stroke="#30363d" vertical={false} />
+                            <XAxis dataKey="time" hide />
+                            <YAxis domain={[0, 100]} ticks={[30, 70]} tick={{ fill: '#4b5563', fontSize: 10 }} />
+                            <Tooltip contentStyle={{ backgroundColor: '#0d1117', border: '1px solid #30363d', borderRadius: '8px' }} />
+                            <ReferenceLine y={70} stroke="#f43f5e" strokeDasharray="3 3" label={{ position: 'right', value: 'SHORT ZONE', fill: '#f43f5e', fontSize: 10 }} />
+                            <ReferenceLine y={30} stroke="#10b981" strokeDasharray="3 3" label={{ position: 'right', value: 'LONG ZONE', fill: '#10b981', fontSize: 10 }} />
+                            <Line type="monotone" dataKey="rsi" stroke="#8b5cf6" strokeWidth={2} dot={false} />
+                            <Area type="monotone" dataKey="rsi" fill="#8b5cf6" fillOpacity={0.1} />
+                          </AreaChart>
+                       </ResponsiveContainer>
+                    </div>
+                  </div>
+    
+                  {/* Strategy Explanation Card */}
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                     <div className="bg-[#161b22] border border-[#30363d] rounded-2xl p-5 space-y-4">
+                        <h4 className="text-sm font-bold text-white flex items-center gap-2">
+                           <Info className="w-4 h-4 text-blue-500" />
+                           How to LONG (Buy)
+                        </h4>
+                        <ul className="text-xs text-slate-400 space-y-2 list-disc pl-4">
+                           <li>RSI가 <span className="text-emerald-500 font-bold">30 이하</span>에서 반등 (과매도 탈출)</li>
+                           <li>MACD Line이 Signal Line을 <span className="text-emerald-500 font-bold">상향 돌파 (Golden Cross)</span></li>
+                        </ul>
+                     </div>
+                     <div className="bg-[#161b22] border border-[#30363d] rounded-2xl p-5 space-y-4">
+                        <h4 className="text-sm font-bold text-white flex items-center gap-2">
+                           <Info className="w-4 h-4 text-rose-500" />
+                           How to SHORT (Sell)
+                        </h4>
+                        <ul className="text-xs text-slate-400 space-y-2 list-disc pl-4">
+                           <li>RSI가 <span className="text-rose-500 font-bold">70 이상</span>에서 하락 반전 (과열 해소)</li>
+                           <li>MACD Line이 Signal Line을 <span className="text-rose-500 font-bold">하향 돌파 (Dead Cross)</span></li>
+                        </ul>
+                     </div>
+                  </div>
+                </>
+              )}
+            </motion.div>
+          ) : (
+            <motion.div 
+              key="trading"
+              initial={{ opacity: 0, x: 20 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: -20 }}
+              className="grid grid-cols-1 md:grid-cols-3 gap-6"
+            >
+              {/* Bot Controller */}
+              <div className="md:col-span-1 space-y-6">
+                <div className="bg-[#161b22] border border-[#30363d] rounded-2xl p-6 space-y-6">
+                  <div className="flex items-center justify-between">
+                    <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                       <Zap className="w-4 h-4 text-emerald-500" />
+                       Trading Bot
+                    </h3>
+                    <div 
+                      onClick={() => setIsAutoTrade(!isAutoTrade)}
+                      className={cn(
+                        "w-10 h-5 rounded-full cursor-pointer transition-all relative border border-[#30363d]",
+                        isAutoTrade ? "bg-emerald-500" : "bg-[#21262d]"
+                      )}
+                    >
+                      <div className={cn("absolute top-0.5 w-3.5 h-3.5 bg-white rounded-full transition-all", isAutoTrade ? "left-5.5" : "left-1")} />
+                    </div>
+                  </div>
 
-            {/* 우측: 주차별 교육 내용 입력 */}
-            <div className="lg:col-span-2 bg-white p-6 rounded-xl shadow-sm space-y-6">
-              <h2 className="text-lg font-semibold border-b pb-2 flex items-center gap-2">
-                <Calendar size={18} /> 주차별 교육 내용 (4주)
-              </h2>
-              <div className="space-y-8">
-                {data.weeks.map((week, idx) => (
-                  <div key={idx} className="border border-gray-200 rounded-lg p-5 bg-gray-50 space-y-4 shadow-sm">
-                    <div className="flex justify-between items-center border-b pb-3">
-                      <h3 className="font-bold text-blue-700 text-lg">{idx + 1}주차</h3>
-                      <button 
-                        onClick={() => handleAIGeneration(idx)}
-                        disabled={week.isGenerating}
-                        className="flex items-center gap-2 bg-indigo-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-indigo-700 transition-colors disabled:bg-indigo-400"
-                      >
-                        {week.isGenerating ? <Loader2 size={16} className="animate-spin" /> : <Wand2 size={16} />}
-                        {week.isGenerating ? 'AI 작성 중...' : '사진으로 내용 자동 완성'}
-                      </button>
+                  <div className="space-y-4">
+                    <div className="space-y-1.5">
+                       <label className="text-xs text-slate-500 font-mono uppercase">Order Size (USDT)</label>
+                       <input 
+                         type="number"
+                         value={orderSize}
+                         onChange={(e) => setOrderSize(e.target.value)}
+                         className="w-full bg-[#0d1117] border border-[#30363d] rounded-lg px-4 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
+                       />
                     </div>
                     
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                      <div>
-                        <label className="block text-xs font-medium text-gray-600 mb-1">교구명</label>
-                        <input type="text" value={week.toolName || ''} onChange={e => updateWeek(idx, 'toolName', e.target.value)} className="w-full border border-gray-300 rounded-md p-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none" />
-                      </div>
-                      <div>
-                        <label className="block text-xs font-medium text-gray-600 mb-1">추가 교구 / 게임 (AI 목표 작성용)</label>
-                        <input type="text" value={week.additionalMaterial || ''} onChange={e => updateWeek(idx, 'additionalMaterial', e.target.value)} className="w-full border border-gray-300 rounded-md p-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none" placeholder="예: 풍선, 스카프" />
+                    <div className="grid grid-cols-2 gap-3 mt-4">
+                       <div className="space-y-1.5">
+                          <label className="text-xs text-slate-500 font-mono uppercase text-emerald-500/80">Take Profit (%)</label>
+                          <input 
+                            type="number"
+                            value={takeProfit}
+                            onChange={(e) => setTakeProfit(e.target.value)}
+                            className="w-full bg-[#0d1117] border border-emerald-500/20 rounded-lg px-4 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                            placeholder="0 (Off)"
+                          />
+                       </div>
+                       <div className="space-y-1.5">
+                          <label className="text-xs text-slate-500 font-mono uppercase text-rose-500/80">Stop Loss (%)</label>
+                          <input 
+                            type="number"
+                            value={stopLoss}
+                            onChange={(e) => setStopLoss(e.target.value)}
+                            className="w-full bg-[#0d1117] border border-rose-500/20 rounded-lg px-4 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-rose-500"
+                            placeholder="0 (Off)"
+                          />
+                       </div>
+                    </div>
+
+                    {/* API Keys Settings */}
+                    <div className="pt-4 border-t border-[#30363d] space-y-3">
+                      <h4 className="text-xs font-bold text-slate-400 flex items-center gap-2">
+                        <Settings className="w-3 h-3" />
+                        Bitget API Settings
+                      </h4>
+                      <div className="space-y-2">
+                        <input 
+                          type="password"
+                          value={apiKey}
+                          onChange={(e) => setApiKey(e.target.value)}
+                          className="w-full bg-[#0d1117] border border-[#30363d] rounded-lg px-3 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-blue-500"
+                          placeholder="API Key (공란 시 서버 기본값)"
+                        />
+                        <input 
+                          type="password"
+                          value={secretKey}
+                          onChange={(e) => setSecretKey(e.target.value)}
+                          className="w-full bg-[#0d1117] border border-[#30363d] rounded-lg px-3 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-blue-500"
+                          placeholder="Secret Key (공란 시 서버 기본값)"
+                        />
+                        <input 
+                          type="password"
+                          value={passphrase}
+                          onChange={(e) => setPassphrase(e.target.value)}
+                          className="w-full bg-[#0d1117] border border-[#30363d] rounded-lg px-3 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-blue-500"
+                          placeholder="Passphrase (공란 시 서버 기본값)"
+                        />
                       </div>
                     </div>
 
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                      <div>
-                        <label className="block text-xs font-medium text-gray-600 mb-1">{getLabels(data.subject).singAlong}</label>
-                        <input type="text" value={week.singAlong || ''} onChange={e => updateWeek(idx, 'singAlong', e.target.value)} className="w-full border border-gray-300 rounded-md p-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none" />
-                      </div>
-                      <div>
-                        <label className="block text-xs font-medium text-gray-600 mb-1">{getLabels(data.subject).playingActivity}</label>
-                        <input type="text" value={week.playingActivity || ''} onChange={e => updateWeek(idx, 'playingActivity', e.target.value)} className="w-full border border-gray-300 rounded-md p-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none" />
-                      </div>
-                    </div>
-
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                      <div>
-                        <label className="block text-xs font-medium text-gray-600 mb-1">목표</label>
-                        <textarea value={week.goal || ''} onChange={e => updateWeek(idx, 'goal', e.target.value)} rows={3} className="w-full border border-gray-300 rounded-md p-2 text-sm resize-none focus:ring-2 focus:ring-blue-500 outline-none" />
-                      </div>
-                      <div>
-                        <label className="block text-xs font-medium text-gray-600 mb-1">기대효과 (계획안용)</label>
-                        <textarea value={week.expectedEffect || ''} onChange={e => updateWeek(idx, 'expectedEffect', e.target.value)} rows={3} className="w-full border border-gray-300 rounded-md p-2 text-sm resize-none focus:ring-2 focus:ring-blue-500 outline-none" />
-                      </div>
-                    </div>
-
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-4 border-t">
-                      <div>
-                        <label className="block text-xs font-medium text-gray-600 mb-1">일지 목표 (자동입력)</label>
-                        <textarea value={week.journalGoal || ''} onChange={e => updateWeek(idx, 'journalGoal', e.target.value)} rows={3} className="w-full border border-gray-300 rounded-md p-2 text-sm resize-none focus:ring-2 focus:ring-blue-500 outline-none" />
-                      </div>
-                      <div>
-                        <label className="block text-xs font-medium text-gray-600 mb-1">전반적 평가 (일지용)</label>
-                        <textarea value={week.evaluation || ''} onChange={e => updateWeek(idx, 'evaluation', e.target.value)} rows={3} className="w-full border border-gray-300 rounded-md p-2 text-sm resize-none focus:ring-2 focus:ring-blue-500 outline-none" />
-                      </div>
+                    <div className="pt-4 grid grid-cols-2 gap-3">
+                       <button 
+                         onClick={() => executeTrade("LONG", orderSize)}
+                         className="flex items-center justify-center gap-2 bg-emerald-500/10 border border-emerald-500/20 text-emerald-500 py-2 rounded-lg text-sm font-medium hover:bg-emerald-500/20 transition-all"
+                       >
+                         <Play className="w-4 h-4 fill-current" />
+                         LONG
+                       </button>
+                       <button 
+                         onClick={() => executeTrade("SHORT", orderSize)}
+                         className="flex items-center justify-center gap-2 bg-rose-500/10 border border-rose-500/20 text-rose-500 py-2 rounded-lg text-sm font-medium hover:bg-rose-500/20 transition-all"
+                       >
+                         <Square className="w-4 h-4 fill-current" />
+                         SHORT
+                       </button>
                     </div>
                   </div>
-                ))}
+
+                  <div className="p-4 bg-blue-500/5 border border-blue-500/20 rounded-xl space-y-2">
+                    <div className="flex items-center gap-2 text-xs font-mono text-blue-400">
+                       <Shield className="w-3 h-3" />
+                       AUTO-PILOT STATUS
+                    </div>
+                    <p className="text-[10px] text-slate-500 leading-relaxed">
+                      자동 매매는 RSI/MACD 변동 시 즉시 체결됩니다. 비트겟 API 키가 서버 설정에 등록되어 있어야 작동합니다.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="bg-[#161b22] border border-[#30363d] rounded-2xl p-6">
+                   <h3 className="text-sm font-bold text-white mb-4 flex items-center gap-2 uppercase tracking-tighter">
+                     <Settings className="w-4 h-4 text-slate-500" />
+                     Apps Script 연동 가이드
+                   </h3>
+                   <div className="space-y-4">
+                     <div className="p-3 bg-blue-500/5 border border-blue-500/20 rounded-lg space-y-2">
+                        <p className="text-[10px] text-blue-400 font-bold flex items-center gap-1">
+                          <AlertCircle className="w-3 h-3" /> [중요] 외부 배포(Vercel/Cloud Run) 필수
+                        </p>
+                        <p className="text-[10px] text-slate-300 leading-relaxed">
+                          현재 AI Studio 환경의 프리뷰 주소로는 앱의 보안 정책상 트레이딩 봇 서버(/api/*)로의 원격 접근 시 302/401 에러가 발생합니다.<br/>
+                          안정적인 자동매매를 위해서는 우측 상단의 <strong>톱니바퀴 (Settings)</strong>에서 <strong>[Deploy to Vercel]</strong> 또는 <strong>[Deploy to Cloud Run]</strong>을 클릭하여 배포해야 합니다.<br/>
+                          배포 완료 후 발급되는 <strong>새로운 URL (예: vercel.app)</strong>을 복사하여 아래 테스트 버튼이나 스크립트에 사용하세요.
+                        </p>
+                     </div>
+
+                     <div className="space-y-1.5 pt-2">
+                        <label className="text-[10px] text-slate-500 font-mono uppercase">API URL (이곳에 배포된 외부 주소 입력)</label>
+                        <input 
+                          type="text"
+                          value={customUrl}
+                          onChange={(e) => setCustomUrl(e.target.value.trim().replace(/\/+$/, ""))}
+                          placeholder={effectiveApiUrl}
+                          className="w-full bg-[#0d1117] border border-[#30363d] rounded-lg px-3 py-1.5 text-[10px] font-mono focus:outline-none focus:border-blue-500 text-slate-300"
+                        />
+                     </div>
+
+                     <div className="grid grid-cols-2 gap-2 mt-4">
+                       <button 
+                         onClick={async () => {
+                           try {
+                             const res = await fetch(effectiveApiUrl + "/api/analyze", { method: "POST" });
+                             const code = res.status;
+                             if (code === 401 || code === 403) {
+                               alert("❌ 오류 401/403: 접근이 거부되었습니다. 앱이 'Public(Anyone with link)'으로 설정되었는지 확인하세요.");
+                             } else if (code === 404) {
+                               alert("❌ 오류 404: 주소를 찾을 수 없습니다. (경로 오류)");
+                             } else if (res.headers.get("content-type")?.includes("text/html")) {
+                               alert("❌ 오류: 서버가 HTML을 반환합니다. (공개 설정 문제일 가능성 높음)");
+                             } else {
+                               alert("✅ 성공: 연결되었습니다! (Status: " + code + ")");
+                             }
+                           } catch (e) {
+                             alert("❌ 연결 실패. 앱 공개 설정을 확인하세요.");
+                           }
+                         }}
+                         className="py-2 bg-[#21262d] border border-[#30363d] rounded-lg text-[10px] font-mono hover:bg-[#30363d] transition-all"
+                       >
+                         TEST_CONNECT
+                       </button>
+                       <button 
+                         onClick={() => setShowScript(true)}
+                         className="py-2 bg-blue-600 border border-blue-500 rounded-lg text-[10px] font-mono text-white hover:bg-blue-700 transition-all font-bold"
+                       >
+                         COPY_SCRIPT
+                       </button>
+                     </div>
+                   </div>
+                </div>
               </div>
-            </div>
-          </div>
-        ) : activeTab === 'preview' ? (
-          <div className="bg-gray-200 p-8 rounded-xl overflow-auto flex flex-col items-center gap-8 preview-container" style={{ maxHeight: '80vh' }}>
-            <div className="text-center text-gray-600 bg-white p-4 rounded-lg shadow-sm w-full max-w-2xl">
-              <p className="font-bold text-lg mb-1">미리보기 화면입니다.</p>
-              <p className="text-sm">실제 인쇄 시 A4 사이즈에 맞춰 여백 없이 깔끔하게 출력됩니다.</p>
-              <p className="text-sm text-blue-600 mt-2">총 20장 (강사 4명 × (계획안 1장 + 일지 4장))이 인쇄됩니다.</p>
-            </div>
-            
-            {/* 첫 번째 강사의 계획안과 1주차 일지만 미리보기로 제공 */}
-            <div className="shadow-2xl bg-white transform scale-90 origin-top transition-transform hover:scale-95">
-              <PlanTemplate data={{...data, weeks: getRotatedWeeks(data.weeks, 0)}} instructor={data.instructors[0]} />
-            </div>
-            <div className="shadow-2xl bg-white transform scale-90 origin-top transition-transform hover:scale-95">
-              <JournalTemplate data={{...data, weeks: getRotatedWeeks(data.weeks, 0)}} instructor={data.instructors[0]} week={getRotatedWeeks(data.weeks, 0)[0]} />
-            </div>
-          </div>
-        ) : null}
+
+               {/* Apps Script Modal */}
+               {showScript && (
+                 <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50 p-4 backdrop-blur-sm">
+                   <motion.div 
+                     initial={{ scale: 0.9, opacity: 0 }}
+                     animate={{ scale: 1, opacity: 1 }}
+                     className="bg-[#161b22] border border-[#30363d] rounded-2xl max-w-3xl w-full max-h-[80vh] flex flex-col overflow-hidden"
+                   >
+                     <div className="p-4 border-b border-[#30363d] flex items-center justify-between">
+                        <h3 className="font-bold text-white">Google Apps Script Snippet</h3>
+                        <button onClick={() => setShowScript(false)} className="p-1 hover:bg-[#30363d] rounded-md transition-all">
+                           <Square className="w-4 h-4 rotate-45" />
+                        </button>
+                     </div>
+                     <div className="flex-1 overflow-auto p-4 bg-[#0d1117] font-mono text-xs text-slate-400">
+                        <pre>{appsScriptCode}</pre>
+                     </div>
+                     <div className="p-4 border-t border-[#30363d] flex items-center justify-end gap-3">
+                        <button 
+                          onClick={() => {
+                            navigator.clipboard.writeText(appsScriptCode);
+                            alert("Copied to clipboard!");
+                          }}
+                          className="px-4 py-2 bg-white text-black font-bold rounded-lg text-sm flex items-center gap-2 hover:bg-slate-200 transition-all"
+                        >
+                           <Copy className="w-4 h-4" />
+                           COPY_CODE
+                        </button>
+                     </div>
+                   </motion.div>
+                 </div>
+               )}
+
+              {/* Execution Logs & Stats */}
+              <div className="md:col-span-2 flex flex-col gap-4 h-full">
+                 {/* Stats Board */}
+                 <div className="bg-[#161b22] border border-[#30363d] rounded-2xl p-6 relative">
+                    <button 
+                      onClick={() => setStats({ winCount: 0, lossCount: 0, totalProfit: 0, initialEquity: null, currentEquity: null, unrealizedPL: 0 })}
+                      className="absolute top-4 right-4 text-[10px] text-slate-500 hover:text-white transition-colors uppercase font-mono"
+                    >
+                      Reset Stats
+                    </button>
+                    <div className="grid grid-cols-3 gap-4">
+                      <div className="flex flex-col gap-1">
+                        <span className="text-[10px] text-slate-500 font-mono uppercase">Total Trades</span>
+                        <span className="text-xl font-bold text-white font-mono">{stats.winCount + stats.lossCount + (logs.length > 0 ? logs.length : 0)}</span>
+                      </div>
+                      <div className="flex flex-col gap-1">
+                        <span className="text-[10px] text-slate-500 font-mono uppercase">Profit / Loss (USDT)</span>
+                        <div className="flex items-baseline gap-2">
+                          <span className={cn("text-xl font-bold font-mono", stats.totalProfit >= 0 ? "text-emerald-500" : "text-rose-500")}>
+                            {stats.totalProfit > 0 ? "+" : ""}{stats.totalProfit.toFixed(2)}
+                          </span>
+                          <span className={cn("text-[10px] font-mono", stats.unrealizedPL >= 0 ? "text-emerald-500/70" : "text-rose-500/70")}>
+                             (Open: {stats.unrealizedPL > 0 ? "+" : ""}{(stats.unrealizedPL || 0).toFixed(2)})
+                          </span>
+                        </div>
+                      </div>
+                      <div className="flex flex-col gap-1">
+                        <span className="text-[10px] text-slate-500 font-mono uppercase">Win Rate</span>
+                        <span className="text-xl font-bold text-white font-mono">
+                           {stats.winCount + stats.lossCount > 0 
+                             ? ((stats.winCount / (stats.winCount + stats.lossCount)) * 100).toFixed(1)
+                             : "0.0"}%
+                        </span>
+                      </div>
+                    </div>
+                 </div>
+
+                 <div className="bg-[#161b22] border border-[#30363d] rounded-2xl p-6 flex flex-col flex-1 min-h-0">
+                   <h3 className="text-sm font-bold text-white mb-6 flex items-center gap-2">
+                      <History className="w-4 h-4 text-slate-500" />
+                      Execution History
+                   </h3>
+
+                   <div className="flex-1 overflow-y-auto space-y-3 pr-2 custom-scrollbar">
+                     {logs.length === 0 ? (
+                     <div className="h-full flex flex-col items-center justify-center text-slate-600 opacity-50">
+                        <History className="w-12 h-12 mb-2" />
+                        <p className="text-sm">No trades executed yet</p>
+                     </div>
+                   ) : (
+                     logs.map((log) => (
+                       <div key={log.id} className="flex items-center justify-between p-3 bg-[#0d1117] border border-[#30363d] rounded-xl group hover:border-slate-600 transition-all">
+                          <div className="flex items-center gap-4">
+                             <div className={cn("p-2 rounded-lg", log.side === "LONG" ? "bg-emerald-500/10 text-emerald-500" : "bg-rose-500/10 text-rose-500")}>
+                                {log.side === "LONG" ? <TrendingUp className="w-4 h-4" /> : <TrendingDown className="w-4 h-4" />}
+                             </div>
+                             <div>
+                                <div className="text-sm font-bold flex items-center gap-2">
+                                   {log.side} {log.symbol}
+                                   <span className={cn("text-[10px] px-1.5 py-0.5 rounded uppercase font-mono", log.status === "SUCCESS" ? "bg-emerald-500/20 text-emerald-500" : "bg-rose-500/20 text-rose-500")}>
+                                      {log.status}
+                                   </span>
+                                </div>
+                                <div className="text-[10px] text-slate-500 font-mono mt-0.5">
+                                   {log.timestamp} • {log.amount} USDT • {log.reason || "Executed by Expert Bot"}
+                                </div>
+                             </div>
+                          </div>
+                          <div className="text-xs font-mono text-slate-600 group-hover:text-slate-400 transition-all">
+                             ID_{log.id}
+                          </div>
+                       </div>
+                     ))
+                   )}
+                 </div>
+              </div>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        {/* Footer info */}
+        <footer className="text-center p-8">
+           <p className="text-[#30363d] text-[10px] font-mono leading-relaxed max-w-2xl mx-auto">
+             STRATEGY_RULES: RSI_OVERSOLD_EXIT (30) OR MACD_GOLDEN_CROSS == LONG | RSI_OVERBOUGHT_FALLING (70) OR MACD_DEAD_CROSS == SHORT<br/>
+             SYSTEM_STATUS: OPERATIONAL | DATA_SOURCE: BITGET_V2_MIX_API | IA_MODEL: GEMINI_FLASH_LATEST<br/>
+             DISCLAIMER: FUTURES_QUANT_TRADING_INVOLVES_HIGH_RISK. NO_FINANCIAL_ADVICE_INTENDED.
+           </p>
+        </footer>
       </div>
 
-      {/* 실제 인쇄 시에만 렌더링되는 영역 (총 20장) */}
-      <div className="print-only">
-        {data.instructors.map((instructor, index) => {
-          const rotatedWeeks = getRotatedWeeks(data.weeks, index);
-          const rotatedData = { ...data, weeks: rotatedWeeks };
-          return (
-            <React.Fragment key={instructor.id}>
-              {/* 강사별 계획안 1장 */}
-              <PlanTemplate data={rotatedData} instructor={instructor} />
-              
-              {/* 강사별 일지 4장 */}
-              {rotatedWeeks.map(week => (
-                <JournalTemplate key={`${instructor.id}-${week.weekNumber}`} data={rotatedData} instructor={instructor} week={week} />
-              ))}
-            </React.Fragment>
-          );
-        })}
-      </div>
+      <style>{`
+        .custom-scrollbar::-webkit-scrollbar { width: 4px; }
+        .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background: #30363d; border-radius: 10px; }
+        .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: #4b5563; }
+      `}</style>
     </div>
   );
 }
+
